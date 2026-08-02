@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "start": "yarn ts-node test/dev-server.ts",
-    "build": "rimraf dist && tsc",
+    "build": "rimraf dist && tsc && copyfiles -u 1 \"src/dashboard/**/*\" dist/",
     "build:dashboard": "vite build --config ./vite.config.mts",
     "dev:dashboard": "vite --clearScreen false",
     "test": "vitest run",
