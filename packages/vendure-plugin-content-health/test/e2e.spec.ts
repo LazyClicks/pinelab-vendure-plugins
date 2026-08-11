@@ -1,0 +1,591 @@
+import { DefaultLogger, EventBus, LogLevel, mergeConfig } from '@vendure/core';
+import {
+  createTestEnvironment,
+  E2E_DEFAULT_CHANNEL_TOKEN,
+  registerInitializer,
+  SimpleGraphQLClient,
+  SqljsInitializer,
+  testConfig,
+  TestServer,
+} from '@vendure/testing';
+import gql from 'graphql-tag';
+import nock from 'nock';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { initialData } from '../../test/src/initial-data';
+import { testPaymentMethod } from '../../test/src/test-payment-method';
+import { waitFor } from '../../test/src/test-helpers';
+import {
+  ChannelContentScanCompletedEvent,
+  ContentCheckService,
+  ContentHealthPlugin,
+} from '../src';
+
+const STOREFRONT_ORIGIN = 'https://storefront.test';
+
+const CREATE_PRODUCT = gql`
+  mutation CreateTestProduct($input: CreateProductInput!) {
+    createProduct(input: $input) {
+      id
+    }
+  }
+`;
+const UPDATE_PRODUCT = gql`
+  mutation UpdateTestProduct($input: UpdateProductInput!) {
+    updateProduct(input: $input) {
+      id
+    }
+  }
+`;
+const CREATE_COLLECTION = gql`
+  mutation CreateTestCollection($input: CreateCollectionInput!) {
+    createCollection(input: $input) {
+      id
+    }
+  }
+`;
+const GET_PRODUCT_CUSTOM_FIELDS = gql`
+  query GetTestProduct($id: ID!) {
+    product(id: $id) {
+      id
+      customFields {
+        excludedFromContentChecks
+      }
+    }
+  }
+`;
+const GET_CONTENT_CHECK_RESULTS = gql`
+  query GetContentCheckResults($entityType: ContentCheckEntityType!, $entityId: ID!) {
+    contentCheckResults(entityType: $entityType, entityId: $entityId) {
+      id
+      hasError
+      hasWarning
+      messages {
+        source
+        severity
+        code
+        message
+      }
+    }
+  }
+`;
+const GET_CONTENT_CHECK_OVERVIEW = gql`
+  query GetContentCheckOverview($options: ContentCheckOverviewListOptions) {
+    contentCheckOverview(options: $options) {
+      items {
+        entityType
+        entityId
+        name
+        hasError
+        hasWarning
+        errorCount
+        warningCount
+        languageCodes
+        preview
+      }
+      totalItems
+    }
+  }
+`;
+const RUN_CONTENT_CHECK_FOR_PRODUCT = gql`
+  mutation RunContentCheckForProduct($productId: ID!) {
+    runContentCheckForProduct(productId: $productId) {
+      id
+      hasError
+      hasWarning
+    }
+  }
+`;
+const RUN_CONTENT_SEO_MONITOR_FULL_SCAN = gql`
+  mutation RunContentHealthFullScan {
+    runContentHealthFullScan {
+      channelsScanned
+      entitiesChecked
+    }
+  }
+`;
+const CREATE_CHANNEL = gql`
+  mutation CreateTestChannel($input: CreateChannelInput!) {
+    createChannel(input: $input) {
+      ... on Channel {
+        id
+        token
+      }
+      ... on ErrorResult {
+        errorCode
+        message
+      }
+    }
+  }
+`;
+const ASSIGN_PRODUCTS_TO_CHANNEL = gql`
+  mutation AssignTestProductsToChannel($input: AssignProductsToChannelInput!) {
+    assignProductsToChannel(input: $input) {
+      id
+    }
+  }
+`;
+
+function goodProductHtml(url: string): string {
+  return `<html><head>
+    <title>${'a'.repeat(55)}</title>
+    <meta name="description" content="${'b'.repeat(150)}" />
+    <link rel="alternate" hreflang="en" href="${url}" />
+    <link rel="alternate" hreflang="x-default" href="${url}" />
+    <script type="application/ld+json">${JSON.stringify([
+      { '@type': 'Product' },
+      { '@type': 'ProductGroup' },
+      { '@type': 'BreadcrumbList' },
+      { '@type': 'Organization' },
+    ])}</script>
+  </head><body></body></html>`;
+}
+
+function goodCollectionHtml(url: string): string {
+  return `<html><head>
+    <title>${'a'.repeat(55)}</title>
+    <meta name="description" content="${'b'.repeat(150)}" />
+    <link rel="alternate" hreflang="en" href="${url}" />
+    <link rel="alternate" hreflang="x-default" href="${url}" />
+    <script type="application/ld+json">${JSON.stringify([
+      { '@type': 'BreadcrumbList' },
+    ])}</script>
+  </head><body></body></html>`;
+}
+
+function sitemapXml(urls: string[]): string {
+  const entries = urls.map((u) => `<url><loc>${u}</loc></url>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><urlset>${entries}</urlset>`;
+}
+
+interface OverviewItem {
+  entityType: string;
+  entityId: string;
+}
+
+describe('ContentHealthPlugin (e2e)', () => {
+  let server: TestServer;
+  let adminClient: SimpleGraphQLClient;
+  let serverStarted = false;
+
+  let goodProductId: string;
+  let goodCollectionId: string;
+  let brokenProductId: string;
+  let excludedProductId: string;
+
+  /**
+   * Products and collections each have their own independent id sequence,
+   * so a product and a collection can share the same encoded id — overview
+   * lookups must always match on both `entityType` and `entityId`.
+   */
+  function isBrokenProductOverviewItem(item: OverviewItem): boolean {
+    return (
+      item.entityType === 'PRODUCT' && String(item.entityId) === String(brokenProductId)
+    );
+  }
+
+  const configurableCheckCalls: string[] = [];
+
+  beforeAll(async () => {
+    registerInitializer('sqljs', new SqljsInitializer('__data__'));
+    const config = mergeConfig(testConfig, {
+      logger: new DefaultLogger({ level: LogLevel.Debug }),
+      plugins: [
+        ContentHealthPlugin.init({
+          getStorefrontUrl: (ctx, { entityType, entity, languageCode }) => {
+            const kind = entityType === 'product' ? 'products' : 'collections';
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const slug = (entity as any).slug as string;
+            return `${STOREFRONT_ORIGIN}/${languageCode}/${kind}/${slug}`;
+          },
+          getSitemapUrl: () => `${STOREFRONT_ORIGIN}/sitemap.xml`,
+          checks: {
+            product: [
+              (ctx, { entity }) => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                configurableCheckCalls.push((entity as any).slug as string);
+                return [];
+              },
+            ],
+          },
+        }),
+      ],
+      paymentOptions: {
+        paymentMethodHandlers: [testPaymentMethod],
+      },
+    });
+    ({ server, adminClient } = createTestEnvironment(config));
+    await server.init({
+      initialData: {
+        ...initialData,
+        paymentMethods: [
+          {
+            name: testPaymentMethod.code,
+            handler: { code: testPaymentMethod.code, arguments: [] },
+          },
+        ],
+      },
+      productsCsvPath: '../test/src/products-import.csv',
+    });
+    serverStarted = true;
+
+    await adminClient.asSuperAdmin();
+
+    const goodProduct = await adminClient.query(CREATE_PRODUCT, {
+      input: {
+        translations: [
+          {
+            languageCode: 'en',
+            name: 'Good Product',
+            slug: 'good-product',
+            description: 'A perfectly fine product.',
+          },
+        ],
+      },
+    });
+    goodProductId = goodProduct.createProduct.id;
+
+    const brokenProduct = await adminClient.query(CREATE_PRODUCT, {
+      input: {
+        translations: [
+          {
+            languageCode: 'en',
+            name: 'Broken Product',
+            slug: 'broken-product',
+            description: 'A product whose storefront page is unreachable.',
+          },
+        ],
+      },
+    });
+    brokenProductId = brokenProduct.createProduct.id;
+
+    const excludedProduct = await adminClient.query(CREATE_PRODUCT, {
+      input: {
+        translations: [
+          {
+            languageCode: 'en',
+            name: 'Excluded Product',
+            slug: 'excluded-product',
+            description: 'A product excluded from content checks.',
+          },
+        ],
+        customFields: { excludedFromContentChecks: true },
+      },
+    });
+    excludedProductId = excludedProduct.createProduct.id;
+
+    const goodCollection = await adminClient.query(CREATE_COLLECTION, {
+      input: {
+        translations: [
+          {
+            languageCode: 'en',
+            name: 'Good Collection',
+            slug: 'good-collection',
+            description: '',
+          },
+        ],
+        filters: [],
+      },
+    });
+    goodCollectionId = goodCollection.createCollection.id;
+
+    // Persistent, stable mocks for the "always good" entities, covering the
+    // whole test file. `broken-product` is deliberately left unmocked here:
+    // real network resolution to `storefront.test` fails, so every check
+    // against it errors out until the "11.6 + 11.7" test explicitly fixes
+    // it — a single, stable ground truth that repeated/duplicate update
+    // events (Vendure may publish more than one `ProductEvent` per admin
+    // mutation) cannot flip back and forth.
+    const goodProductUrl = `${STOREFRONT_ORIGIN}/en/products/good-product`;
+    const goodCollectionUrl = `${STOREFRONT_ORIGIN}/en/collections/good-collection`;
+    const brokenProductUrl = `${STOREFRONT_ORIGIN}/en/products/broken-product`;
+    nock(STOREFRONT_ORIGIN)
+      .persist()
+      .get('/en/products/good-product')
+      .reply(200, goodProductHtml(goodProductUrl))
+      .get('/en/collections/good-collection')
+      .reply(200, goodCollectionHtml(goodCollectionUrl))
+      .get('/sitemap.xml')
+      .reply(200, sitemapXml([goodProductUrl, goodCollectionUrl, brokenProductUrl]));
+  }, 60000);
+
+  afterAll(async () => {
+    nock.cleanAll();
+    await server.destroy();
+  }, 100000);
+
+  it('Should start successfully', () => {
+    expect(serverStarted).toBe(true);
+  });
+
+  it('11.4: excluded product detail query reflects the exclusion flag', async () => {
+    const { product } = await adminClient.query(GET_PRODUCT_CUSTOM_FIELDS, {
+      id: excludedProductId,
+    });
+    expect(product.customFields.excludedFromContentChecks).toBe(true);
+  });
+
+  it('11.3 + 11.5: full scan checks all non-excluded entities, isolates a broken one, and publishes one event per channel', async () => {
+    const eventBus = server.app.get(EventBus);
+    const events: ChannelContentScanCompletedEvent[] = [];
+    const subscription = eventBus
+      .ofType(ChannelContentScanCompletedEvent)
+      .subscribe((event) => events.push(event));
+
+    configurableCheckCalls.length = 0;
+    await server.app.get(ContentCheckService).runFullScan();
+    subscription.unsubscribe();
+
+    // Exactly one event for the single (default) channel in this scan.
+    expect(events).toHaveLength(1);
+    // At least our 3 non-excluded entities were checked (the scan also
+    // covers whatever products the CSV fixture import created).
+    expect(events[0].findings.length).toBeGreaterThanOrEqual(3);
+
+    // Note: `events[0].findings[].entityId` are raw, un-encoded internal
+    // ids (this is a direct EventBus subscription, not a GraphQL response),
+    // so entity-specific assertions below go through the admin API instead,
+    // which applies the same id encoding as `goodProductId` etc.
+
+    const goodResults = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+      entityType: 'PRODUCT',
+      entityId: goodProductId,
+    });
+    expect(goodResults.contentCheckResults).toHaveLength(1);
+    expect(goodResults.contentCheckResults[0].hasError).toBe(false);
+    expect(goodResults.contentCheckResults[0].hasWarning).toBe(false);
+
+    const goodCollectionResults = await adminClient.query(
+      GET_CONTENT_CHECK_RESULTS,
+      { entityType: 'COLLECTION', entityId: goodCollectionId }
+    );
+    expect(goodCollectionResults.contentCheckResults).toHaveLength(1);
+    expect(goodCollectionResults.contentCheckResults[0].hasError).toBe(false);
+
+    const brokenResults = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+      entityType: 'PRODUCT',
+      entityId: brokenProductId,
+    });
+    expect(brokenResults.contentCheckResults).toHaveLength(1);
+    expect(brokenResults.contentCheckResults[0].hasError).toBe(true);
+    expect(
+      brokenResults.contentCheckResults[0].messages.some(
+        (m: { code: string }) => m.code === 'PAGE_FETCH_FAILED'
+      )
+    ).toBe(true);
+
+    // The broken entity did not prevent the others (or their configurable
+    // checks) from being checked.
+    expect(configurableCheckCalls).toContain('good-product');
+    expect(configurableCheckCalls).toContain('broken-product');
+
+    // Excluded entity: no check results were ever produced for it.
+    const excludedResults = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+      entityType: 'PRODUCT',
+      entityId: excludedProductId,
+    });
+    expect(excludedResults.contentCheckResults).toEqual([]);
+  });
+
+  it('contentCheckOverview supports filtering by entityType, filtering by name, and pagination', async () => {
+    const productsOnly = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {
+      options: { filter: { entityType: { eq: 'PRODUCT' } } },
+    });
+    expect(
+      productsOnly.contentCheckOverview.items.every(
+        (item: { entityType: string }) => item.entityType === 'PRODUCT'
+      )
+    ).toBe(true);
+    expect(productsOnly.contentCheckOverview.items.length).toBeGreaterThan(0);
+
+    const byName = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {
+      options: { filter: { name: { contains: 'Broken Product' } } },
+    });
+    expect(byName.contentCheckOverview.items).toHaveLength(1);
+    expect(byName.contentCheckOverview.items[0].entityId).toBe(brokenProductId);
+    // The overview aggregates across languages, so counts reflect a single
+    // row per entity, not one per (entity, language) combination.
+    expect(byName.contentCheckOverview.items[0].errorCount).toBeGreaterThan(0);
+
+    const allItems = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {
+      options: {},
+    });
+    expect(allItems.contentCheckOverview.totalItems).toBeGreaterThan(1);
+
+    const firstPage = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {
+      options: { take: 1 },
+    });
+    expect(firstPage.contentCheckOverview.items).toHaveLength(1);
+    expect(firstPage.contentCheckOverview.totalItems).toBe(
+      allItems.contentCheckOverview.totalItems
+    );
+  });
+
+  it('11.2: updating a product triggers its own check and stores a new result', async () => {
+    await adminClient.query(UPDATE_PRODUCT, {
+      input: { id: goodProductId, enabled: true },
+    });
+
+    const results = await waitFor(async () => {
+      const res = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+        entityType: 'PRODUCT',
+        entityId: goodProductId,
+      });
+      return res.contentCheckResults.length > 0 ? res.contentCheckResults : undefined;
+    });
+
+    expect(results[0].hasError).toBe(false);
+  }, 20000);
+
+  it('11.4: updating the excluded product does not produce a check result', async () => {
+    // No nock mock registered for this entity's URL: if the exclusion
+    // short-circuit were broken, the resulting fetch failure would still
+    // surface as a saved error result, so this assertion is meaningful
+    // either way.
+    await adminClient.query(UPDATE_PRODUCT, {
+      input: { id: excludedProductId, enabled: true },
+    });
+
+    // Give the async event subscriber a moment to run (or not run).
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const results = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+      entityType: 'PRODUCT',
+      entityId: excludedProductId,
+    });
+    expect(results.contentCheckResults).toEqual([]);
+  });
+
+  it('11.6 + 11.7: overview includes an entity with errors, and drops it (with replaced messages) once fixed', async () => {
+    const brokenProductUrl = `${STOREFRONT_ORIGIN}/en/products/broken-product`;
+
+    // Still broken at this point (no mock registered for it at all, so the
+    // real fetch to `storefront.test` fails) -> appears in the overview.
+    await adminClient.query(UPDATE_PRODUCT, {
+      input: { id: brokenProductId, enabled: true },
+    });
+
+    await waitFor(async () => {
+      const res = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+        entityType: 'PRODUCT',
+        entityId: brokenProductId,
+      });
+      const messages = res.contentCheckResults[0]?.messages ?? [];
+      return messages.some((m: { code: string }) => m.code === 'PAGE_FETCH_FAILED')
+        ? true
+        : undefined;
+    });
+
+    const overviewBefore = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {});
+    expect(
+      overviewBefore.contentCheckOverview.items.some(isBrokenProductOverviewItem)
+    ).toBe(true);
+
+    // Now: fix it (page is reachable and fully valid; the shared sitemap
+    // mock from beforeAll already includes this URL) -> re-check replaces
+    // the result and it drops off the overview. Registered as `.persist()`
+    // so that a duplicate/repeated update event still sees the fixed page.
+    nock(STOREFRONT_ORIGIN)
+      .persist()
+      .get('/en/products/broken-product')
+      .reply(200, goodProductHtml(brokenProductUrl));
+
+    await adminClient.query(UPDATE_PRODUCT, {
+      input: { id: brokenProductId, enabled: true },
+    });
+
+    await waitFor(async () => {
+      const res = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+        entityType: 'PRODUCT',
+        entityId: brokenProductId,
+      });
+      return res.contentCheckResults[0]?.hasError === false ? true : undefined;
+    });
+
+    const resultsAfter = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+      entityType: 'PRODUCT',
+      entityId: brokenProductId,
+    });
+    expect(resultsAfter.contentCheckResults).toHaveLength(1);
+    expect(
+      resultsAfter.contentCheckResults[0].messages.some(
+        (m: { code: string }) => m.code === 'PAGE_FETCH_FAILED'
+      )
+    ).toBe(false);
+
+    const overviewAfter = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {});
+    expect(
+      overviewAfter.contentCheckOverview.items.some(isBrokenProductOverviewItem)
+    ).toBe(false);
+  }, 30000);
+
+  it('runContentCheckForProduct: manually re-checks a single product on demand and returns its fresh results', async () => {
+    const result = await adminClient.query(RUN_CONTENT_CHECK_FOR_PRODUCT, {
+      productId: goodProductId,
+    });
+
+    expect(result.runContentCheckForProduct).toHaveLength(1);
+    expect(result.runContentCheckForProduct[0].hasError).toBe(false);
+    expect(result.runContentCheckForProduct[0].hasWarning).toBe(false);
+  });
+
+  it('runContentHealthFullScan: manually runs a full scan on demand', async () => {
+    const result = await adminClient.query(RUN_CONTENT_SEO_MONITOR_FULL_SCAN, {});
+
+    expect(result.runContentHealthFullScan.channelsScanned).toBe(1);
+    // Our 3 non-excluded entities plus whatever the CSV fixture imported.
+    expect(
+      result.runContentHealthFullScan.entitiesChecked
+    ).toBeGreaterThanOrEqual(3);
+  }, 20000);
+
+  it('runContentCheckForProduct is isolated to the active channel: does not read or write another channel', async () => {
+    const defaultChannelResultsBefore = await adminClient.query(
+      GET_CONTENT_CHECK_RESULTS,
+      { entityType: 'PRODUCT', entityId: goodProductId }
+    );
+    expect(defaultChannelResultsBefore.contentCheckResults).toHaveLength(1);
+
+    const createChannelResult = await adminClient.query(CREATE_CHANNEL, {
+      input: {
+        code: 'seo-monitor-test-channel-2',
+        token: 'seo-monitor-test-channel-2-token',
+        defaultLanguageCode: 'en',
+        defaultCurrencyCode: 'USD',
+        pricesIncludeTax: true,
+        defaultShippingZoneId: 1,
+        defaultTaxZoneId: 1,
+      },
+    });
+    const channel2Id = createChannelResult.createChannel.id as string;
+    expect(channel2Id).toBeDefined();
+
+    await adminClient.query(ASSIGN_PRODUCTS_TO_CHANNEL, {
+      input: { productIds: [goodProductId], channelId: channel2Id },
+    });
+
+    // Run the manual check while scoped to channel 2.
+    adminClient.setChannelToken('seo-monitor-test-channel-2-token');
+    const channel2Result = await adminClient.query(RUN_CONTENT_CHECK_FOR_PRODUCT, {
+      productId: goodProductId,
+    });
+    expect(channel2Result.runContentCheckForProduct).toHaveLength(1);
+
+    const channel2Results = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+      entityType: 'PRODUCT',
+      entityId: goodProductId,
+    });
+    expect(channel2Results.contentCheckResults).toHaveLength(1);
+
+    // Switch back: the default channel's result must be completely
+    // unaffected by the check that was just run for channel 2.
+    adminClient.setChannelToken(E2E_DEFAULT_CHANNEL_TOKEN);
+    const defaultChannelResultsAfter = await adminClient.query(
+      GET_CONTENT_CHECK_RESULTS,
+      { entityType: 'PRODUCT', entityId: goodProductId }
+    );
+    expect(defaultChannelResultsAfter.contentCheckResults).toHaveLength(1);
+    expect(defaultChannelResultsAfter.contentCheckResults[0].id).toBe(
+      defaultChannelResultsBefore.contentCheckResults[0].id
+    );
+  });
+});
