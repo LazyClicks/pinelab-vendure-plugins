@@ -1,6 +1,6 @@
 import { DeepPartial, ID, LanguageCode, VendureEntity } from '@vendure/core';
 import { Column, Entity, Index, Unique } from 'typeorm';
-import { ContentCheckEntityType, ContentCheckMessage } from '../types';
+import { ContentCheckMessage } from '../types';
 
 // Fully replaced on every re-check (no history kept), so one row per
 // (entityType, entityId, channelId, languageCode) is enforced below.
@@ -11,8 +11,10 @@ export class ContentCheckResult extends VendureEntity {
     super(input);
   }
 
+  // 'product' | 'collection' for the built-in scan pipeline, or a free-form
+  // string chosen by an `additionalChecks` function for custom entities.
   @Column('varchar')
-  entityType!: ContentCheckEntityType;
+  entityType!: string;
 
   @Index()
   @Column({ type: 'varchar' })
@@ -27,6 +29,13 @@ export class ContentCheckResult extends VendureEntity {
 
   @Column({ nullable: true })
   url?: string;
+
+  // Only set for `additionalChecks` results (custom entityType): the
+  // plugin has no generic way to look up a display name for an arbitrary
+  // entity, so it's captured at check time. Product/collection names are
+  // always resolved live instead, so this stays null for those rows.
+  @Column({ nullable: true })
+  label?: string;
 
   // Denormalized from `messages`, so the overview/alert queries can filter
   // on a plain column instead of scanning the JSON blob.

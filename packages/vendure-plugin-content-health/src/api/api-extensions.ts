@@ -6,11 +6,6 @@ export const adminApiExtensions = gql`
     ERROR
   }
 
-  enum ContentCheckEntityType {
-    PRODUCT
-    COLLECTION
-  }
-
   type ContentCheckMessage {
     source: String!
     severity: ContentCheckSeverity!
@@ -18,12 +13,20 @@ export const adminApiExtensions = gql`
     message: String!
   }
 
+  """
+  \`entityType\` is 'PRODUCT'/'COLLECTION' for the built-in scan pipeline, or
+  whatever free-form string an \`additionalChecks\` function chose for a
+  custom entity (e.g. 'cms-content-entry').
+  """
   type ContentCheckResult {
     id: ID!
-    entityType: ContentCheckEntityType!
-    entityId: ID!
+    entityType: String!
+    "Not the ID scalar, deliberately: see the resolver's decodeEntityId/encodeEntityId for why."
+    entityId: String!
     languageCode: LanguageCode!
     url: String
+    "Only set for custom entity types (see entityType); product/collection names are always resolved live instead."
+    label: String
     hasError: Boolean!
     hasWarning: Boolean!
     messages: [ContentCheckMessage!]!
@@ -37,9 +40,11 @@ export const adminApiExtensions = gql`
   """
   type ContentCheckOverviewItem implements Node {
     id: ID!
-    entityType: ContentCheckEntityType!
-    entityId: ID!
+    entityType: String!
+    entityId: String!
     name: String!
+    "The URL to link to for this entity. Always set for products/collections; only set for a custom entity type if its check provided one."
+    url: String
     hasError: Boolean!
     hasWarning: Boolean!
     errorCount: Int!
@@ -75,15 +80,14 @@ export const adminApiExtensions = gql`
   }
 
   extend type Query {
-    "Latest check results for a single product/collection, scoped to the active channel, across every language it was checked in."
-    contentCheckResults(
-      entityType: ContentCheckEntityType!
-      entityId: ID!
-    ): [ContentCheckResult!]!
-    "Every product/collection in the active channel that currently has at least one warning or error, in any checked language."
+    "Latest check results for a single entity, scoped to the active channel, across every language it was checked in."
+    contentCheckResults(entityType: String!, entityId: String!): [ContentCheckResult!]!
+    "Every entity in the active channel that currently has at least one warning or error, in any checked language."
     contentCheckOverview(
       options: ContentCheckOverviewListOptions
     ): ContentCheckOverviewList!
+    "Every distinct entityType (built-in or from additionalChecks) that currently has at least one entity with a warning or error in the active channel — used to populate the issues list's type filter."
+    contentCheckEntityTypes: [String!]!
   }
 
   extend type Mutation {

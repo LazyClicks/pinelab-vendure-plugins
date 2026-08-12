@@ -54,9 +54,11 @@ const GET_PRODUCT_CUSTOM_FIELDS = gql`
   }
 `;
 const GET_CONTENT_CHECK_RESULTS = gql`
-  query GetContentCheckResults($entityType: ContentCheckEntityType!, $entityId: ID!) {
+  query GetContentCheckResults($entityType: String!, $entityId: String!) {
     contentCheckResults(entityType: $entityType, entityId: $entityId) {
       id
+      label
+      url
       hasError
       hasWarning
       messages {
@@ -93,6 +95,11 @@ const RUN_CONTENT_CHECK_FOR_PRODUCT = gql`
       hasError
       hasWarning
     }
+  }
+`;
+const GET_CONTENT_CHECK_ENTITY_TYPES = gql`
+  query GetContentCheckEntityTypes {
+    contentCheckEntityTypes
   }
 `;
 const RUN_CONTENT_SEO_MONITOR_FULL_SCAN = gql`
@@ -184,6 +191,18 @@ describe('ContentHealthPlugin (e2e)', () => {
   }
 
   const configurableCheckCalls: string[] = [];
+  const additionalCheckResults: Array<{
+    entityType: string;
+    entityId: string;
+    label: string;
+    url?: string;
+    messages: Array<{
+      source: string;
+      severity: string;
+      code: string;
+      message: string;
+    }>;
+  }> = [];
 
   beforeAll(async () => {
     registerInitializer('sqljs', new SqljsInitializer('__data__'));
@@ -191,22 +210,22 @@ describe('ContentHealthPlugin (e2e)', () => {
       logger: new DefaultLogger({ level: LogLevel.Debug }),
       plugins: [
         ContentHealthPlugin.init({
-          getStorefrontUrl: (ctx, { entityType, entity, languageCode }) => {
-            const kind = entityType === 'product' ? 'products' : 'collections';
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const slug = (entity as any).slug as string;
-            return `${STOREFRONT_ORIGIN}/${languageCode}/${kind}/${slug}`;
-          },
+          getProductUrl: (ctx, { product, languageCode }) =>
+            `${STOREFRONT_ORIGIN}/${languageCode}/products/${product.slug}`,
+          getCollectionUrl: (ctx, { collection, languageCode }) =>
+            `${STOREFRONT_ORIGIN}/${languageCode}/collections/${collection.slug}`,
           getSitemapUrl: () => `${STOREFRONT_ORIGIN}/sitemap.xml`,
           checks: {
             product: [
-              (ctx, { entity }) => {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                configurableCheckCalls.push((entity as any).slug as string);
+              (ctx, { product }) => {
+                configurableCheckCalls.push(product.slug);
                 return [];
               },
             ],
           },
+          additionalChecks: [
+            () => additionalCheckResults,
+          ],
         }),
       ],
       paymentOptions: {
@@ -517,6 +536,57 @@ describe('ContentHealthPlugin (e2e)', () => {
       overviewAfter.contentCheckOverview.items.some(isBrokenProductOverviewItem)
     ).toBe(false);
   }, 30000);
+
+  it('additionalChecks: a custom entity type is checked during a full scan and surfaced in the overview and its own detail query', async () => {
+    additionalCheckResults.length = 0;
+    additionalCheckResults.push({
+      entityType: 'administrator',
+      entityId: 'admin-1',
+      label: 'Super Admin',
+      url: '/administrators/1',
+      messages: [
+        {
+          source: 'demo-admin-check',
+          severity: 'warning',
+          code: 'DEMO_CUSTOM_CHECK',
+          message: 'A demo finding from an additionalChecks function.',
+        },
+      ],
+    });
+
+    await server.app.get(ContentCheckService).runFullScan();
+
+    const results = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+      entityType: 'administrator',
+      entityId: 'admin-1',
+    });
+    expect(results.contentCheckResults).toHaveLength(1);
+    expect(results.contentCheckResults[0].hasWarning).toBe(true);
+    expect(results.contentCheckResults[0].label).toBe('Super Admin');
+    expect(results.contentCheckResults[0].url).toBe('/administrators/1');
+    expect(results.contentCheckResults[0].messages[0].code).toBe(
+      'DEMO_CUSTOM_CHECK'
+    );
+
+    const overview = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {
+      options: { filter: { entityType: { eq: 'administrator' } } },
+    });
+    expect(overview.contentCheckOverview.items).toHaveLength(1);
+    expect(overview.contentCheckOverview.items[0]).toMatchObject({
+      entityType: 'administrator',
+      entityId: 'admin-1',
+      name: 'Super Admin',
+      hasError: false,
+      hasWarning: true,
+    });
+
+    // The type filter's options are loaded from this query, so a custom
+    // `additionalChecks` entity type must show up alongside the built-ins.
+    const entityTypes = await adminClient.query(GET_CONTENT_CHECK_ENTITY_TYPES);
+    expect(entityTypes.contentCheckEntityTypes).toEqual(
+      expect.arrayContaining(['PRODUCT', 'COLLECTION', 'administrator'])
+    );
+  }, 20000);
 
   it('runContentCheckForProduct: manually re-checks a single product on demand and returns its fresh results', async () => {
     const result = await adminClient.query(RUN_CONTENT_CHECK_FOR_PRODUCT, {

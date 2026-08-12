@@ -1,40 +1,76 @@
 import {
+  api,
   Badge,
   Button,
   DashboardRouteDefinition,
   DetailPageButton,
   ListPage,
+  PageActionBarRight,
 } from '@vendure/dashboard';
-import { AlertTriangleIcon, ExternalLinkIcon } from 'lucide-react';
-import { contentCheckOverviewListDocument } from '../queries';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { AnyRoute, Link } from '@tanstack/react-router';
+import { AlertTriangleIcon, ExternalLinkIcon, RefreshCwIcon } from 'lucide-react';
+import { useRef } from 'react';
+import { toast } from 'sonner';
+import { entityTypeLabel } from '../entity-type-label';
+import {
+  contentCheckEntityTypesDocument,
+  contentCheckOverviewListDocument,
+  runContentHealthFullScanDocument,
+} from '../queries';
 
+/**
+ * `entityType` is passed through verbatim (not case-folded) since a custom
+ * entity type from `additionalChecks` can be any casing the site owner
+ * chose, and the issue detail route matches it exactly against the stored
+ * value.
+ */
 function issueDetailHref(entityType: string, entityId: string): string {
-  return `/content-health/issues/${entityType.toLowerCase()}/${entityId}`;
+  return `/content-health/issues/${encodeURIComponent(entityType)}/${entityId}`;
 }
 
-function editEntityHref(entityType: string, entityId: string): string {
-  return entityType === 'PRODUCT'
-    ? `/products/${entityId}`
-    : `/collections/${entityId}`;
-}
+function ContentCheckIssuesListPage({ route }: { route: AnyRoute }) {
+  const queryClient = useQueryClient();
+  const refreshListRef = useRef<(() => void) | undefined>(undefined);
 
-export const contentCheckIssuesListRoute: DashboardRouteDefinition = {
-  path: '/content-health/issues',
-  loader: () => ({ breadcrumb: 'SEO / content issues' }),
-  component: (route) => (
+  const runFullScanMutation = useMutation({
+    mutationFn: () => api.mutate(runContentHealthFullScanDocument, {}),
+    onSuccess: async (data) => {
+      const result = data.runContentHealthFullScan;
+      toast.success(
+        `Full scan complete: ${result.entitiesChecked} ${result.entitiesChecked === 1 ? 'entity' : 'entities'} checked across ${result.channelsScanned} ${result.channelsScanned === 1 ? 'channel' : 'channels'}.`
+      );
+      await queryClient.invalidateQueries({
+        queryKey: ['content-health-overview'],
+      });
+      refreshListRef.current?.();
+    },
+    onError: (err: unknown) =>
+      toast.error(err instanceof Error ? err.message : 'Full scan failed'),
+  });
+
+  return (
     <ListPage
       pageId="content-health-issues-list"
       title="SEO / content issues"
       listQuery={contentCheckOverviewListDocument}
       route={route}
+      registerRefresher={(refreshFn) => {
+        refreshListRef.current = refreshFn;
+      }}
       onSearchTermChange={(term) => ({ name: { contains: term } })}
       facetedFilters={{
         entityType: {
           title: 'Type',
-          options: [
-            { label: 'Product', value: 'PRODUCT' },
-            { label: 'Collection', value: 'COLLECTION' },
-          ],
+          // Loaded dynamically rather than hardcoded to 'PRODUCT'/'COLLECTION',
+          // since `additionalChecks` can report arbitrary custom entity types.
+          optionsFn: async () => {
+            const result = await api.query(contentCheckEntityTypesDocument, {});
+            return result.contentCheckEntityTypes.map((entityType) => ({
+              label: entityTypeLabel(entityType),
+              value: entityType,
+            }));
+          },
         },
         hasError: {
           title: 'Severity',
@@ -46,6 +82,11 @@ export const contentCheckIssuesListRoute: DashboardRouteDefinition = {
       }}
       customizeColumns={{
         name: {
+          // `entityId` is otherwise a hidden column, and the list query is
+          // optimized to only fetch fields backing visible columns — without
+          // this, `row.original.entityId` (used below) would be `undefined`
+          // and both this link and the "go to entity" button would break.
+          meta: { dependencies: ['entityId'] },
           cell: ({ row }) => (
             <DetailPageButton
               href={issueDetailHref(row.original.entityType, row.original.entityId)}
@@ -57,7 +98,7 @@ export const contentCheckIssuesListRoute: DashboardRouteDefinition = {
           header: 'Type',
           cell: ({ row }) => (
             <span className="text-muted-foreground">
-              {row.original.entityType === 'PRODUCT' ? 'Product' : 'Collection'}
+              {entityTypeLabel(row.original.entityType)}
             </span>
           ),
         },
@@ -84,6 +125,7 @@ export const contentCheckIssuesListRoute: DashboardRouteDefinition = {
         hasWarning: { meta: { disabled: true } },
         errorCount: { meta: { disabled: true } },
         warningCount: { meta: { disabled: true } },
+        url: { meta: { disabled: true } },
         preview: {
           header: 'Preview',
           cell: ({ row }) => (
@@ -111,18 +153,21 @@ export const contentCheckIssuesListRoute: DashboardRouteDefinition = {
       additionalColumns={{
         goToEntity: {
           header: '',
+          // `url` is otherwise a hidden column — see the `name` column's
+          // comment above for why this is required.
+          meta: { dependencies: ['url'] },
           cell: ({ row }) => {
-            const entityType = row.original.entityType;
-            const label =
-              entityType === 'PRODUCT' ? 'Go to product' : 'Go to collection';
+            const url = row.original.url;
+            if (!url) {
+              return null;
+            }
+            const label = `Go to ${entityTypeLabel(row.original.entityType).toLowerCase()}`;
             return (
               <Button
                 variant="ghost"
                 size="icon"
                 title={label}
-                render={
-                  <a href={editEntityHref(entityType, row.original.entityId)} />
-                }
+                render={<Link to={url} />}
               >
                 <ExternalLinkIcon className="h-4 w-4" />
                 <span className="sr-only">{label}</span>
@@ -148,8 +193,27 @@ export const contentCheckIssuesListRoute: DashboardRouteDefinition = {
         goToEntity: true,
       }}
       defaultSort={[{ id: 'hasError', desc: true }]}
-    />
-  ),
+    >
+      <PageActionBarRight>
+        <Button
+          type="button"
+          disabled={runFullScanMutation.isPending}
+          onClick={() => runFullScanMutation.mutate()}
+        >
+          <RefreshCwIcon
+            className={`h-4 w-4 mr-2 ${runFullScanMutation.isPending ? 'animate-spin' : ''}`}
+          />
+          {runFullScanMutation.isPending ? 'Scanning…' : 'Run full scan now'}
+        </Button>
+      </PageActionBarRight>
+    </ListPage>
+  );
+}
+
+export const contentCheckIssuesListRoute: DashboardRouteDefinition = {
+  path: '/content-health/issues',
+  loader: () => ({ breadcrumb: 'SEO / content issues' }),
+  component: (route) => <ContentCheckIssuesListPage route={route} />,
   navMenuItem: {
     sectionId: 'catalog',
     id: 'content-health-issues',

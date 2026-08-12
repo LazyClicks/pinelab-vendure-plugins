@@ -1,14 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { ID, RequestContext, TransactionalConnection } from '@vendure/core';
 import { ContentCheckResult } from '../entities/content-check-result.entity';
-import { ContentCheckEntityType, ContentCheckMessage } from '../types';
+import { ContentCheckMessage } from '../types';
 
 export interface SaveContentCheckResultInput {
-  entityType: ContentCheckEntityType;
+  entityType: string;
   entityId: ID;
   channelId: ID;
   languageCode: string;
   url?: string;
+  label?: string;
   messages: ContentCheckMessage[];
   checkedAt: Date;
 }
@@ -23,7 +24,7 @@ export class ContentCheckResultService {
    */
   async findResultsFor(
     ctx: RequestContext,
-    entityType: ContentCheckEntityType,
+    entityType: string,
     entityId: ID
   ): Promise<ContentCheckResult[]> {
     return this.connection.getRepository(ctx, ContentCheckResult).find({
@@ -57,6 +58,28 @@ export class ContentCheckResultService {
   }
 
   /**
+   * Every distinct `entityType` that currently has at least one entity with
+   * a warning or error in the active channel — used to populate the issues
+   * list's "Type" filter with whatever entity types (built-in or from
+   * `additionalChecks`) are actually present, instead of a fixed list.
+   */
+  async findDistinctEntityTypesWithIssues(ctx: RequestContext): Promise<string[]> {
+    const rows = await this.connection
+      .getRepository(ctx, ContentCheckResult)
+      .createQueryBuilder('result')
+      .select('DISTINCT result.entityType', 'entityType')
+      .where('result.channelId = :channelId', {
+        channelId: ctx.channelId.toString(),
+      })
+      .andWhere('(result.hasError = :hasError OR result.hasWarning = :hasWarning)', {
+        hasError: true,
+        hasWarning: true,
+      })
+      .getRawMany<{ entityType: string }>();
+    return rows.map((row) => row.entityType).sort();
+  }
+
+  /**
    * Upserts the result for a single (entity, channel, language) combination
    * using the find-then-save pattern: insert when no existing row, update
    * in place (fully replacing `messages`) otherwise.
@@ -84,6 +107,7 @@ export class ContentCheckResultService {
         channelId: input.channelId,
         languageCode: input.languageCode as ContentCheckResult['languageCode'],
         url: input.url,
+        label: input.label,
         hasError,
         hasWarning,
         messages: input.messages,

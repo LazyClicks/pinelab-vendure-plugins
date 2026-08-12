@@ -41,15 +41,19 @@ function ContentCheckFindingsBlockInner({
   });
 
   const checkNowMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!entityId) {
-        return Promise.reject(new Error('Missing entity id'));
+        throw new Error('Missing entity id');
       }
-      return entityType === 'PRODUCT'
-        ? api.mutate(runContentCheckForProductDocument, { productId: entityId })
-        : api.mutate(runContentCheckForCollectionDocument, {
-            collectionId: entityId,
-          });
+      if (entityType === 'PRODUCT') {
+        await api.mutate(runContentCheckForProductDocument, {
+          productId: entityId,
+        });
+      } else {
+        await api.mutate(runContentCheckForCollectionDocument, {
+          collectionId: entityId,
+        });
+      }
     },
     onSuccess: async () => {
       toast.success('SEO/content check complete');

@@ -1,13 +1,12 @@
 import { graphql } from '@/gql';
 
 export const contentCheckResultsDocument = graphql(`
-  query ContentCheckResultsForBlock(
-    $entityType: ContentCheckEntityType!
-    $entityId: ID!
-  ) {
+  query ContentCheckResultsForBlock($entityType: String!, $entityId: String!) {
     contentCheckResults(entityType: $entityType, entityId: $entityId) {
       id
       languageCode
+      url
+      label
       hasError
       hasWarning
       messages {
@@ -28,6 +27,7 @@ export const contentCheckOverviewListDocument = graphql(`
         entityType
         entityId
         name
+        url
         hasError
         hasWarning
         errorCount
@@ -48,6 +48,7 @@ export const contentCheckOverviewForWidgetDocument = graphql(`
         entityType
         entityId
         name
+        url
         hasError
         hasWarning
       }
@@ -67,6 +68,12 @@ export const contentCheckOverviewForAlertDocument = graphql(`
       }
       totalItems
     }
+  }
+`);
+
+export const contentCheckEntityTypesDocument = graphql(`
+  query ContentCheckEntityTypes {
+    contentCheckEntityTypes
   }
 `);
 

@@ -8,15 +8,10 @@ import {
 } from '@vendure/dashboard';
 import { Link } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
+import { entityTypeLabel } from '../entity-type-label';
 import { contentCheckOverviewForWidgetDocument } from '../queries';
 
 const WIDGET_ITEM_LIMIT = 10;
-
-function detailUrl(entityType: string, entityId: string): string {
-  return entityType === 'PRODUCT'
-    ? `/products/${entityId}`
-    : `/collections/${entityId}`;
-}
 
 /**
  * Dashboard home page widget listing products/collections that currently
@@ -61,15 +56,16 @@ export function ContentCheckOverviewWidget() {
                     className={item.hasError ? 'bg-destructive/10' : undefined}
                   >
                     <TableCell>
-                      <a
-                        href={detailUrl(item.entityType, item.entityId)}
-                        className="hover:underline"
-                      >
-                        {item.name}
-                      </a>
+                      {item.url ? (
+                        <Link to={item.url} className="hover:underline">
+                          {item.name}
+                        </Link>
+                      ) : (
+                        item.name
+                      )}
                     </TableCell>
                     <TableCell className="text-right text-xs text-muted-foreground">
-                      {item.entityType === 'PRODUCT' ? 'Product' : 'Collection'}
+                      {entityTypeLabel(item.entityType)}
                     </TableCell>
                   </TableRow>
                 ))}

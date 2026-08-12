@@ -11,9 +11,10 @@ import {
 } from '@vendure/dashboard';
 import { graphql } from '@/gql';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AnyRoute } from '@tanstack/react-router';
+import { AnyRoute, Link } from '@tanstack/react-router';
 import { ExternalLinkIcon, RefreshCwIcon } from 'lucide-react';
 import { toast } from 'sonner';
+import { entityTypeLabel, isCoreEntityType } from '../entity-type-label';
 import {
   contentCheckResultsDocument,
   runContentCheckForCollectionDocument,
@@ -39,37 +40,47 @@ const collectionForIssueDetailDocument = graphql(`
   }
 `);
 
-type EntityType = 'PRODUCT' | 'COLLECTION';
-
-function normalizeEntityTypeParam(value: string | undefined): EntityType {
-  return value?.toLowerCase() === 'collection' ? 'COLLECTION' : 'PRODUCT';
-}
-
 /**
- * Standalone detail page for a single product/collection's SEO/content
- * findings, reachable from the issues list. The entity isn't a normal
- * editable resource here (no create/update mutation makes sense for a
- * read-only aggregation), so this is a plain read-only page rather than a
+ * Standalone detail page for a single entity's SEO/content findings,
+ * reachable from the issues list. The entity isn't a normal editable
+ * resource here (no create/update mutation makes sense for a read-only
+ * aggregation), so this is a plain read-only page rather than a
  * `useDetailPage`-backed form.
+ *
+ * `entityType` is 'PRODUCT'/'COLLECTION' for the built-in scan pipeline, or
+ * a free-form custom type from an `additionalChecks` function. For the
+ * former, the entity's live name/existence is resolved via the normal
+ * product/collection admin queries. For the latter, there is no generic way
+ * to do either, so the page relies entirely on the `label`/`url` captured
+ * on the check result itself.
  */
 export function ContentCheckIssueDetailPage({ route }: { route: AnyRoute }) {
   const params = route.useParams() as {
     entityType?: string;
     entityId?: string;
   };
-  const entityType = normalizeEntityTypeParam(params.entityType);
+  const entityType = params.entityType ?? '';
   const entityId = params.entityId;
+  const isProduct = entityType === 'PRODUCT';
+  const isCollection = entityType === 'COLLECTION';
+  const isCustomEntity = !isCoreEntityType(entityType);
   const queryClient = useQueryClient();
 
   const entityQuery = useQuery({
     queryKey: ['content-health-issue-entity', entityType, entityId],
-    queryFn: () =>
-      entityType === 'PRODUCT'
-        ? api.query(productForIssueDetailDocument, { id: entityId as string })
-        : api.query(collectionForIssueDetailDocument, {
-            id: entityId as string,
-          }),
-    enabled: !!entityId,
+    queryFn: async () => {
+      if (isProduct) {
+        const result = await api.query(productForIssueDetailDocument, {
+          id: entityId as string,
+        });
+        return result.product ?? null;
+      }
+      const result = await api.query(collectionForIssueDetailDocument, {
+        id: entityId as string,
+      });
+      return result.collection ?? null;
+    },
+    enabled: !!entityId && !isCustomEntity,
   });
 
   const resultsQueryKey = ['content-check-results', entityType, entityId];
@@ -84,15 +95,25 @@ export function ContentCheckIssueDetailPage({ route }: { route: AnyRoute }) {
   });
 
   const checkNowMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!entityId) {
-        return Promise.reject(new Error('Missing entity id'));
+        throw new Error('Missing entity id');
       }
-      return entityType === 'PRODUCT'
-        ? api.mutate(runContentCheckForProductDocument, { productId: entityId })
-        : api.mutate(runContentCheckForCollectionDocument, {
-            collectionId: entityId,
-          });
+      if (isProduct) {
+        await api.mutate(runContentCheckForProductDocument, {
+          productId: entityId,
+        });
+        return;
+      }
+      if (isCollection) {
+        await api.mutate(runContentCheckForCollectionDocument, {
+          collectionId: entityId,
+        });
+        return;
+      }
+      throw new Error(
+        'This entity type has no manual re-check — it is only checked as part of a full scan.'
+      );
     },
     onSuccess: async () => {
       toast.success('SEO/content check complete');
@@ -121,31 +142,36 @@ export function ContentCheckIssueDetailPage({ route }: { route: AnyRoute }) {
     );
   }
 
-  const entity =
-    entityType === 'PRODUCT'
-      ? entityQuery.data?.product
-      : entityQuery.data?.collection;
+  const entity = entityQuery.data ?? undefined;
+  // Only products/collections have a generic "does this still exist" check;
+  // a custom entity type has no such lookup, so it's never treated as
+  // "not found" here — a stale row just keeps showing its last known label.
   const entityNotFound =
-    !entityQuery.isLoading && entityQuery.isFetched && !entity;
+    !isCustomEntity &&
+    !entityQuery.isLoading &&
+    entityQuery.isFetched &&
+    !entity;
+
+  const results = resultsQuery.data?.contentCheckResults ?? [];
+  const storedLabel = results.find((r) => r.label)?.label ?? undefined;
+  const storedUrl = results.find((r) => r.url)?.url ?? undefined;
 
   // Edge cases: a blank/whitespace-only name falls back to a stable,
   // identifiable placeholder instead of an empty page title.
-  const rawName = entity?.name?.trim();
-  const entityLabel = entityType === 'PRODUCT' ? 'product' : 'collection';
+  const rawName = (isCustomEntity ? storedLabel : entity?.name)?.trim();
+  const label = entityTypeLabel(entityType).toLowerCase();
   const displayName =
-    rawName && rawName.length > 0
-      ? rawName
-      : `Untitled ${entityLabel} #${entityId}`;
+    rawName && rawName.length > 0 ? rawName : `Untitled ${label} #${entityId}`;
 
-  const results = resultsQuery.data?.contentCheckResults ?? [];
   const allMessages = results.flatMap((r) =>
     r.messages.map((m) => ({ ...m, languageCode: r.languageCode }))
   );
 
-  const editEntityHref =
-    entityType === 'PRODUCT'
-      ? `/products/${entityId}`
-      : `/collections/${entityId}`;
+  const editEntityHref = isProduct
+    ? `/products/${entityId}`
+    : isCollection
+      ? `/collections/${entityId}`
+      : storedUrl;
 
   return (
     <Page pageId="content-health-issue-detail">
@@ -158,28 +184,36 @@ export function ContentCheckIssueDetailPage({ route }: { route: AnyRoute }) {
       </PageTitle>
       <PageActionBar>
         <PageActionBarRight>
-          <Button type="button" variant="outline" render={<a href={editEntityHref} />}>
-            <ExternalLinkIcon className="h-4 w-4 mr-2" />
-            Go to {entityLabel}
-          </Button>
-          <Button
-            type="button"
-            disabled={checkNowMutation.isPending || entityNotFound}
-            onClick={() => checkNowMutation.mutate()}
-          >
-            <RefreshCwIcon
-              className={`h-4 w-4 mr-2 ${checkNowMutation.isPending ? 'animate-spin' : ''}`}
-            />
-            {checkNowMutation.isPending ? 'Checking…' : 'Check now'}
-          </Button>
+          {editEntityHref && (
+            <Button
+              type="button"
+              variant="outline"
+              render={<Link to={editEntityHref} />}
+            >
+              <ExternalLinkIcon className="h-4 w-4 mr-2" />
+              Go to {label}
+            </Button>
+          )}
+          {!isCustomEntity && (
+            <Button
+              type="button"
+              disabled={checkNowMutation.isPending || entityNotFound}
+              onClick={() => checkNowMutation.mutate()}
+            >
+              <RefreshCwIcon
+                className={`h-4 w-4 mr-2 ${checkNowMutation.isPending ? 'animate-spin' : ''}`}
+              />
+              {checkNowMutation.isPending ? 'Checking…' : 'Check now'}
+            </Button>
+          )}
         </PageActionBarRight>
       </PageActionBar>
       <PageLayout>
         <PageBlock column="main" blockId="content-health-issue-findings">
           {entityNotFound ? (
             <p className="text-sm text-muted-foreground">
-              This {entityLabel} could not be found — it may have been deleted
-              since it was last checked.
+              This {label} could not be found — it may have been deleted since
+              it was last checked.
             </p>
           ) : resultsQuery.isLoading ? (
             <div className="animate-pulse space-y-2">
@@ -187,7 +221,15 @@ export function ContentCheckIssueDetailPage({ route }: { route: AnyRoute }) {
               <div className="h-8 bg-muted rounded-md" />
             </div>
           ) : (
-            <ContentCheckFindingsList messages={allMessages} />
+            <div className="space-y-3">
+              {isCustomEntity && (
+                <p className="text-sm text-muted-foreground">
+                  This is a custom entity type ({entityType}), checked as part
+                  of the full scan. It has no manual re-check.
+                </p>
+              )}
+              <ContentCheckFindingsList messages={allMessages} />
+            </div>
           )}
         </PageBlock>
       </PageLayout>

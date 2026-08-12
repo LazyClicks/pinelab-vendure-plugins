@@ -1,4 +1,5 @@
 import { Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import {
   Channel,
   Collection,
@@ -6,6 +7,7 @@ import {
   CollectionService,
   EventBus,
   ID,
+  Injector,
   LanguageCode,
   Logger,
   Product,
@@ -54,6 +56,7 @@ export class ContentCheckService implements OnApplicationBootstrap {
     private pageFetcher: StorefrontPageFetcher,
     private sitemapFetcher: SitemapFetcher,
     private resultService: ContentCheckResultService,
+    private moduleRef: ModuleRef,
     @Inject(PLUGIN_INIT_OPTIONS)
     private options: ContentHealthPluginOptions
   ) {}
@@ -177,10 +180,72 @@ export class ContentCheckService implements OnApplicationBootstrap {
       }
     });
 
+    findings.push(...(await this.runAdditionalChecks(ctx, channel)));
+
     await this.eventBus.publish(
       new ChannelContentScanCompletedEvent(ctx, channel, findings)
     );
     return tasks.length;
+  }
+
+  /**
+   * Runs every `additionalChecks` function once for this channel, each in
+   * its own try/catch so one broken custom check doesn't affect the others
+   * or the rest of the scan. Each function is fully responsible for finding
+   * its own entities (via the supplied `Injector`) and reporting its own
+   * entity type/id/label/url — there is no generic way for the plugin to
+   * resolve those for content it has no built-in concept of.
+   */
+  private async runAdditionalChecks(
+    ctx: RequestContext,
+    channel: Channel
+  ): Promise<ChannelScanFindingEntry[]> {
+    const additionalChecks = this.options.additionalChecks ?? [];
+    if (additionalChecks.length === 0) {
+      return [];
+    }
+    const injector = new Injector(this.moduleRef);
+    const findings: ChannelScanFindingEntry[] = [];
+    for (const check of additionalChecks) {
+      let results: Awaited<ReturnType<typeof check>>;
+      try {
+        results = await check(ctx, injector);
+      } catch (e) {
+        Logger.error(
+          `additionalChecks function failed for channel '${channel.code}': ${
+            asError(e).message
+          }`,
+          loggerCtx,
+          asError(e).stack
+        );
+        continue;
+      }
+      for (const item of results) {
+        try {
+          const languageCode = item.languageCode ?? channel.defaultLanguageCode;
+          const savedResult = await this.resultService.saveResult(ctx, {
+            entityType: item.entityType,
+            entityId: item.entityId,
+            channelId: channel.id,
+            languageCode,
+            url: item.url,
+            label: item.label,
+            messages: item.messages,
+            checkedAt: new Date(),
+          });
+          findings.push(toFindingEntry(item.entityType, savedResult));
+        } catch (e) {
+          Logger.error(
+            `Failed to save an additionalChecks result (entityType '${item.entityType}', entityId '${item.entityId}') for channel '${channel.code}': ${
+              asError(e).message
+            }`,
+            loggerCtx,
+            asError(e).stack
+          );
+        }
+      }
+    }
+    return findings;
   }
 
   /**
@@ -305,12 +370,18 @@ export class ContentCheckService implements OnApplicationBootstrap {
     const messages: ContentCheckMessage[] = [];
     let resolvedUrl: string | undefined;
     try {
-      resolvedUrl = await this.options.getStorefrontUrl(ctx, {
-        entityType,
-        entity,
-        channel,
-        languageCode,
-      });
+      resolvedUrl =
+        entityType === 'product'
+          ? await this.options.getProductUrl(ctx, {
+              product: entity as Product,
+              channel,
+              languageCode,
+            })
+          : await this.options.getCollectionUrl(ctx, {
+              collection: entity as Collection,
+              channel,
+              languageCode,
+            });
     } catch (e) {
       messages.push(internalErrorMessage('url-resolution', e));
     }
@@ -349,18 +420,31 @@ export class ContentCheckService implements OnApplicationBootstrap {
       );
     }
 
-    const configuredChecks = this.options.checks?.[entityType] ?? [];
-    for (const check of configuredChecks) {
-      try {
-        const result = await check(ctx, {
-          entityType,
-          entity,
-          channel,
-          languageCode,
-        });
-        messages.push(...result);
-      } catch (e) {
-        messages.push(internalErrorMessage('configurable-check', e));
+    if (entityType === 'product') {
+      for (const check of this.options.checks?.product ?? []) {
+        try {
+          const result = await check(ctx, {
+            product: entity as Product,
+            channel,
+            languageCode,
+          });
+          messages.push(...result);
+        } catch (e) {
+          messages.push(internalErrorMessage('configurable-check', e));
+        }
+      }
+    } else {
+      for (const check of this.options.checks?.collection ?? []) {
+        try {
+          const result = await check(ctx, {
+            collection: entity as Collection,
+            channel,
+            languageCode,
+          });
+          messages.push(...result);
+        } catch (e) {
+          messages.push(internalErrorMessage('configurable-check', e));
+        }
       }
     }
 
@@ -544,7 +628,7 @@ function internalErrorMessage(source: string, e: unknown): ContentCheckMessage {
 }
 
 function toFindingEntry(
-  entityType: ContentCheckEntityType,
+  entityType: string,
   result: ContentCheckResult
 ): ChannelScanFindingEntry {
   return {

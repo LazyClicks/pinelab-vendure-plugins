@@ -1,9 +1,8 @@
 import { ID } from '@vendure/core';
 import { ContentCheckResult } from '../entities/content-check-result.entity';
-import { ContentCheckEntityType } from '../types';
 
 export interface AggregatedOverviewGroup {
-  entityType: ContentCheckEntityType;
+  entityType: string;
   entityId: ID;
   hasError: boolean;
   hasWarning: boolean;
@@ -12,12 +11,16 @@ export interface AggregatedOverviewGroup {
   languageCodes: string[];
   /** The first error message if any, otherwise the first warning message. */
   preview: string | undefined;
+  /** The first non-empty stored `label` across the group's rows, if any (custom entity types only). */
+  label: string | undefined;
+  /** The first non-empty stored `url` across the group's rows, if any. */
+  url: string | undefined;
 }
 
 /**
  * Groups per-(entity, language) result rows into one entry per entity,
- * since the same product/collection can have a separate row per language
- * it was checked in within a channel.
+ * since the same product/collection/custom entity can have a separate row
+ * per language it was checked in within a channel.
  */
 export function groupContentCheckResultsByEntity(
   results: ContentCheckResult[]
@@ -41,12 +44,16 @@ export function groupContentCheckResultsByEntity(
         warningCount: 0,
         languageCodes: [],
         preview: undefined,
+        label: undefined,
+        url: undefined,
         firstErrorMessage: undefined,
         firstWarningMessage: undefined,
       };
       groups.set(key, group);
     }
     group.languageCodes.push(result.languageCode);
+    group.label ??= result.label ?? undefined;
+    group.url ??= result.url ?? undefined;
     for (const message of result.messages) {
       if (message.severity === 'error') {
         group.hasError = true;
@@ -69,6 +76,8 @@ export function groupContentCheckResultsByEntity(
     warningCount: group.warningCount,
     languageCodes: group.languageCodes,
     preview: group.firstErrorMessage ?? group.firstWarningMessage,
+    label: group.label,
+    url: group.url,
   }));
 }
 

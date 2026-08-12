@@ -14,7 +14,9 @@ Built-in, non-configurable checks against the storefront page's rendered HTML (f
 
 On top of that, you can register your own **Vendure content checks** — checks against Vendure catalog data itself (as opposed to the rendered page) — via the `checks` option. No built-in Vendure-data checks ship with the plugin.
 
-Only the latest result per (product-or-collection, channel, language) is kept; a new check fully replaces the previous one. No history/trend data is stored.
+For content that isn't a product or collection at all (e.g. CMS entries managed by another plugin), see [`additionalChecks`](#additionalchecks-custom-entities) below.
+
+Only the latest result per (entity, channel, language) is kept; a new check fully replaces the previous one. No history/trend data is stored.
 
 ## Getting started
 
@@ -23,12 +25,15 @@ import { ContentHealthPlugin } from '@pinelab/vendure-plugin-content-health';
 
 plugins: [
   ContentHealthPlugin.init({
-    // Required: resolve the storefront URL for a product/collection, channel and language.
-    // Returning `undefined` for a non-excluded entity is recorded as an error, not silently skipped.
-    getStorefrontUrl: (ctx, { entityType, entity, channel, languageCode }) => {
-      const kind = entityType === 'product' ? 'products' : 'collections';
-      return `https://storefront.example.com/${languageCode}/${kind}/${entity.slug}`;
-    },
+    // Required: resolve the storefront URL for a product, given the channel and language.
+    // Kept separate from `getCollectionUrl` since products and collections often follow
+    // different URL structures (e.g. a flat product path vs. a nested category tree).
+    // Returning `undefined` for a non-excluded product is recorded as an error, not silently skipped.
+    getProductUrl: (ctx, { product, languageCode }) =>
+      `https://storefront.example.com/${languageCode}/products/${product.slug}`,
+    // Required: resolve the storefront URL for a collection, given the channel and language.
+    getCollectionUrl: (ctx, { collection, languageCode }) =>
+      `https://storefront.example.com/${languageCode}/collections/${collection.slug}`,
     // Optional: resolve the sitemap to check URL inclusion against, per channel/language.
     // Omit (or return `undefined`) to skip the sitemap-inclusion check for a channel/language.
     getSitemapUrl: (ctx, { channel, languageCode }) =>
@@ -39,11 +44,12 @@ plugins: [
     concurrency: 5,
     // Optional: change when the full scan runs (default: nightly at 3:00 AM).
     scheduledTask: { schedule: (cron) => cron.everyDayAt(4, 0) },
-    // Optional: your own checks against Vendure catalog data.
+    // Optional: your own checks against Vendure catalog data, for products and
+    // collections specifically. For any other kind of content, see `additionalChecks`.
     checks: {
       product: [
-        (ctx, { entity }) => {
-          if (!entity.description || entity.description.length < 20) {
+        (ctx, { product }) => {
+          if (!product.description || product.description.length < 20) {
             return [
               {
                 source: 'my-description-check',
@@ -59,15 +65,20 @@ plugins: [
       ],
       collection: [],
     },
+    // Optional: checks for content that isn't a product or collection at all.
+    // See "additionalChecks: custom entities" below.
+    additionalChecks: [],
   }),
 ];
 ```
+
+Every strategy function (`getProductUrl`, `getCollectionUrl`, `checks`, `additionalChecks`) receives the `RequestContext`, so behaviour — including the resolved URL — can differ per channel.
 
 The dashboard extensions are provided as a React Dashboard extension — no Admin UI compilation step is needed:
 
 - A findings block on the product/collection detail page (with a "Check now" button and the exclusion notice).
 - A dashboard-home overview widget, linking through to the full issues page.
-- A full, filterable, paginated **"SEO / content issues" list page** under the Catalog nav section (`/content-health/issues`), listing every product/collection with a current warning or error — deduplicated across every language it was checked in, with an error/warning count, a message preview, and the affected languages. Supports searching by name and filtering by type (Product/Collection) and severity (errors vs. warnings-only). Each row has a "Go to product"/"Go to collection" button for direct navigation, and clicking the name goes to this plugin's own **issue detail page** (`/content-health/issues/product|collection/:id`), which shows the entity's full findings across every checked language, a "Check now" button, and its own "Go to product"/"Go to collection" link. A deleted entity is shown with a "could not be found" state rather than a broken link; a blank/whitespace-only name falls back to `Untitled product #<id>` / `Untitled collection #<id>`.
+- A full, filterable, paginated **"SEO / content issues" list page** under the Catalog nav section (`/content-health/issues`), listing every entity with a current warning or error — deduplicated across every language it was checked in, with an error/warning count, a message preview, and the affected languages. Supports searching by name and filtering by type and severity (errors vs. warnings-only). Each row has a "Go to entity" button for direct navigation (to the product/collection detail page for the built-ins, or the URL the `additionalChecks` result provided for a custom entity type — hidden if none was given), and clicking the name goes to this plugin's own **issue detail page** (`/content-health/issues/:entityType/:entityId`), which shows the entity's full findings across every checked language and its own "Go to entity" link. For products/collections, a "Check now" button re-checks the entity on demand, and a deleted entity is shown with a "could not be found" state rather than a broken link; a blank/whitespace-only name falls back to `Untitled product #<id>` / `Untitled collection #<id>`. Custom entity types (from `additionalChecks`) have no "Check now" button — see [below](#additionalchecks-custom-entities) — and use the `label` captured at check time instead, falling back to `Untitled <entityType> #<id>` if blank.
 - An error-only alert, also linking through to the issues list.
 
 ## Custom fields
@@ -83,22 +94,60 @@ Adds an `excludedFromContentChecks` boolean custom field to both `Product` and `
 
 Root collections (`isRoot: true`) are skipped, since they don't correspond to a real storefront page.
 
+## `additionalChecks`: custom entities
+
+`checks.product`/`checks.collection` are deliberately limited to Vendure's built-in products and collections — that keeps the common case simple for anyone already used to Vendure. For content that isn't a product or collection at all (a CMS entry managed by another plugin, a landing page, anything else stored in the Vendure DB), register an `additionalChecks` function instead:
+
+```ts
+additionalChecks: [
+  async (ctx, injector) => {
+    const connection = injector.get(TransactionalConnection);
+    const entries = await connection
+      .getRepository(ctx, MyCmsEntry)
+      .find();
+    return entries
+      .filter((entry) => !entry.metaTitle)
+      .map((entry) => ({
+        entityType: 'cms-content-entry',
+        entityId: entry.id,
+        label: entry.title,
+        url: `/cms-content-entries/${entry.id}`,
+        messages: [
+          {
+            source: 'cms-meta-title-check',
+            severity: 'warning',
+            code: 'CMS_ENTRY_MISSING_META_TITLE',
+            message: 'This CMS entry has no meta title set.',
+          },
+        ],
+      }));
+  },
+],
+```
+
+Unlike `checks.product`/`checks.collection`, an `additionalChecks` function isn't scoped to an existing entity — it receives an `Injector` (so it can fetch anything from the Vendure DB, or from another plugin's own service, for the given channel) and is fully responsible for finding whatever it wants to check and reporting its own `entityType`, `entityId`, `label`, and (optionally) `url` for every result. `entityType` must not be `'product'` or `'collection'` (those are reserved for the built-in pipeline). `entityId` isn't required to be a Vendure-style numeric/encoded id — any string is fine, since it's only ever round-tripped back through this plugin's own API, not Vendure's core entity-id codec.
+
+It runs once per channel during a full scan (scheduled or on-demand); it is not triggered by a per-entity update event (Vendure has no generic "custom entity updated" event to hook into), and there is no per-entity manual "Check now" mutation for it — only a full-scan re-check picks up changes.
+
 ## Event
 
-`ChannelContentScanCompletedEvent` is published once per channel at the end of a full scan (not for per-entity update-triggered checks), carrying that channel's findings for every language and entity checked during the scan — including page-fetch and sitemap failures. Subscribe to it to build things like an email report, without polling the stored results:
+`ChannelContentScanCompletedEvent` is published once per channel at the end of a full scan (not for per-entity update-triggered checks), carrying that channel's findings for every language and entity checked during the scan — including page-fetch and sitemap failures, and `additionalChecks` results. Subscribe to it to build things like an email report, without polling the stored results:
 
 ```ts
 eventBus
   .ofType(ChannelContentScanCompletedEvent)
   .subscribe(({ channel, findings }) => {
     // findings: Array<{ entityType, entityId, languageCode, url, hasError, hasWarning, messages, checkedAt }>
+    // entityType is 'product' | 'collection' for the built-in pipeline, or
+    // whatever free-form string an `additionalChecks` function chose.
   });
 ```
 
 ## Admin API
 
-- `contentCheckResults(entityType: ContentCheckEntityType!, entityId: ID!): [ContentCheckResult!]!` — latest results for a single entity, scoped to the active channel, across every language it was checked in.
-- `contentCheckOverview(options: ContentCheckOverviewListOptions): ContentCheckOverviewList!` — a standard Vendure paginated list of every product/collection in the active channel with at least one current warning or error. One row per entity (deduplicated across languages), with `errorCount`, `warningCount`, `languageCodes`, and a `preview` of the first error (or first warning) message. Supports `filter: { name, entityType, hasError, hasWarning }`, `sort`, `skip`/`take` like any other Vendure list query.
+- `contentCheckResults(entityType: String!, entityId: String!): [ContentCheckResult!]!` — latest results for a single entity, scoped to the active channel, across every language it was checked in. `entityType` is `'PRODUCT'`/`'COLLECTION'` for the built-in pipeline, or whatever custom string an `additionalChecks` function chose. Results carry `label`/`url`, which are only populated for custom entity types (product/collection names and URLs are always resolved live instead).
+- `contentCheckOverview(options: ContentCheckOverviewListOptions): ContentCheckOverviewList!` — a standard Vendure paginated list of every entity in the active channel with at least one current warning or error. One row per entity (deduplicated across languages), with `url`, `errorCount`, `warningCount`, `languageCodes`, and a `preview` of the first error (or first warning) message. Supports `filter: { name, entityType, hasError, hasWarning }`, `sort`, `skip`/`take` like any other Vendure list query.
+- `contentCheckEntityTypes: [String!]!` — every distinct `entityType` that currently has at least one entity with a warning or error in the active channel. Powers the issues list's "Type" filter, so a custom `additionalChecks` entity type shows up there automatically instead of requiring the filter options to be predefined.
 - `runContentCheckForProduct(productId: ID!): [ContentCheckResult!]!` — manually re-checks a single product now and returns its fresh results.
 - `runContentCheckForCollection(collectionId: ID!): [ContentCheckResult!]!` — manually re-checks a single collection now and returns its fresh results.
 - `runContentHealthFullScan: ContentHealthScanResult!` — manually runs a full scan now, the same as the scheduled task.

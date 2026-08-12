@@ -1,3 +1,4 @@
+import { ModuleRef } from '@nestjs/core';
 import {
   Channel,
   Collection,
@@ -46,6 +47,7 @@ function createService(options: ContentHealthPluginOptions) {
     pageFetcher,
     sitemapFetcher,
     resultService,
+    undefined as unknown as ModuleRef, // unused by checkEntity
     options
   );
   return { service, saveResult };
@@ -71,7 +73,8 @@ function createEntity(
 describe('ContentCheckService.checkEntity', () => {
   it('short-circuits an excluded entity: no result is written, no error is produced', async () => {
     const { service, saveResult } = createService({
-      getStorefrontUrl: vi.fn(),
+      getProductUrl: vi.fn(),
+      getCollectionUrl: vi.fn(),
     });
 
     const result = await service.checkEntity(
@@ -97,7 +100,8 @@ describe('ContentCheckService.checkEntity', () => {
     );
     const { service, saveResult } = createService({
       // Forces URL_UNRESOLVABLE, so the page fetch is skipped.
-      getStorefrontUrl: vi.fn(() => Promise.resolve(undefined)),
+      getProductUrl: vi.fn(() => Promise.resolve(undefined)),
+      getCollectionUrl: vi.fn(),
       checks: { product: [throwingCheck, passingCheck] },
     });
 

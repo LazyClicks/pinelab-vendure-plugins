@@ -2,6 +2,7 @@ import {
   Channel,
   Collection,
   ID,
+  Injector,
   LanguageCode,
   Product,
   RequestContext,
@@ -10,7 +11,10 @@ import {
 
 /**
  * @description
- * The kind of catalog entity a content check result belongs to.
+ * The kind of catalog entity a content check result belongs to, for the
+ * built-in product/collection scan pipeline. `additionalChecks` results are
+ * not constrained to this — they carry their own free-form `entityType`
+ * string.
  */
 export type ContentCheckEntityType = 'product' | 'collection';
 
@@ -41,27 +45,47 @@ export interface ContentCheckMessage {
 
 /**
  * @description
- * The arguments passed to a {@link ContentCheck} and to
- * `getStorefrontUrl`/`getSitemapUrl`.
+ * The arguments passed to a product-scoped `ContentCheck`, `getProductUrl`.
  */
-export interface ContentCheckArgs {
-  entityType: ContentCheckEntityType;
-  entity: Product | Collection;
+export interface ProductCheckArgs {
+  product: Product;
   channel: Channel;
   languageCode: LanguageCode;
 }
 
 /**
  * @description
- * A site-owner-supplied check against Vendure catalog data (as opposed to
- * the built-in storefront page checks, which operate on the rendered HTML).
+ * The arguments passed to a collection-scoped `ContentCheck`,
+ * `getCollectionUrl`.
+ */
+export interface CollectionCheckArgs {
+  collection: Collection;
+  channel: Channel;
+  languageCode: LanguageCode;
+}
+
+/**
+ * @description
+ * A site-owner-supplied check against a product's Vendure catalog data (as
+ * opposed to the built-in storefront page checks, which operate on the
+ * rendered HTML).
  *
  * Return zero or more messages. Throwing is caught by the pipeline and
  * turned into a single internal error message; it does not abort the scan.
  */
-export type ContentCheck = (
+export type ProductContentCheck = (
   ctx: RequestContext,
-  args: ContentCheckArgs
+  args: ProductCheckArgs
+) => Promise<ContentCheckMessage[]> | ContentCheckMessage[];
+
+/**
+ * @description
+ * A site-owner-supplied check against a collection's Vendure catalog data.
+ * See {@link ProductContentCheck}.
+ */
+export type CollectionContentCheck = (
+  ctx: RequestContext,
+  args: CollectionCheckArgs
 ) => Promise<ContentCheckMessage[]> | ContentCheckMessage[];
 
 /**
@@ -71,7 +95,7 @@ export type ContentCheck = (
  * `ContentCheckResult` row.
  */
 export interface ChannelScanFindingEntry {
-  entityType: ContentCheckEntityType;
+  entityType: string;
   entityId: ID;
   languageCode: LanguageCode;
   url?: string;
@@ -83,18 +107,84 @@ export interface ChannelScanFindingEntry {
 
 /**
  * @description
+ * A single result produced by an {@link AdditionalContentCheck}, for
+ * content the plugin has no built-in concept of (e.g. a custom Vendure
+ * entity managed by another plugin, such as a CMS content entry).
+ */
+export interface AdditionalCheckResult {
+  /**
+   * A free-form label identifying the kind of custom entity this result is
+   * for, e.g. `'cms-content-entry'`. Shown in the dashboard's "Type" column.
+   * Must not be `'product'` or `'collection'` (those are reserved for the
+   * built-in scan pipeline).
+   */
+  entityType: string;
+  entityId: ID;
+  /**
+   * Display name shown in the dashboard overview and issue detail page.
+   * Unlike products/collections, the plugin has no generic way to look this
+   * up live, so it's captured here and stored alongside the result.
+   */
+  label: string;
+  /**
+   * Optional URL for the dashboard's "Go to entity" button — typically your
+   * own plugin's admin detail page, since the plugin has no generic way to
+   * build one for a custom entity. Omit to hide the button.
+   */
+  url?: string;
+  /**
+   * @default the channel's default language
+   */
+  languageCode?: LanguageCode;
+  messages: ContentCheckMessage[];
+}
+
+/**
+ * @description
+ * A site-owner-supplied check for content the plugin has no built-in
+ * concept of. Unlike `checks.product`/`checks.collection`, this isn't
+ * scoped to an existing product/collection: the function receives an
+ * `Injector` (so it can fetch anything from the Vendure DB, or from another
+ * plugin's own service, for the given channel) and is fully responsible for
+ * finding whatever it wants to check and reporting its own entity type, id,
+ * label, and (optionally) URL.
+ *
+ * Runs once per channel during a full scan (scheduled or on-demand); it is
+ * not triggered by a per-entity update event, since Vendure has no generic
+ * "custom entity updated" event to hook into, and there is no per-entity
+ * manual "Check now" mutation for it.
+ */
+export type AdditionalContentCheck = (
+  ctx: RequestContext,
+  injector: Injector
+) => Promise<AdditionalCheckResult[]> | AdditionalCheckResult[];
+
+/**
+ * @description
  * The plugin can be configured using the following options:
  */
 export interface ContentHealthPluginOptions {
   /**
    * @description
-   * Resolves the storefront URL for a given product/collection, channel and
-   * language. Returning `undefined` for a non-excluded entity is treated as
-   * an unresolvable-URL error, not a silent skip.
+   * Resolves the storefront URL for a given product, channel and language.
+   * Returning `undefined` for a non-excluded product is treated as an
+   * unresolvable-URL error, not a silent skip.
    */
-  getStorefrontUrl: (
+  getProductUrl: (
     ctx: RequestContext,
-    args: ContentCheckArgs
+    args: ProductCheckArgs
+  ) => string | undefined | Promise<string | undefined>;
+  /**
+   * @description
+   * Resolves the storefront URL for a given collection, channel and
+   * language. Kept separate from `getProductUrl` since collection URLs
+   * often follow a different structure (e.g. a category tree path).
+   * Returning `undefined` for a non-excluded collection is treated as an
+   * unresolvable-URL error, not a silent skip.
+   */
+  getCollectionUrl: (
+    ctx: RequestContext,
+    args: CollectionCheckArgs
   ) => string | undefined | Promise<string | undefined>;
   /**
    * @description
@@ -138,11 +228,20 @@ export interface ContentHealthPluginOptions {
   scheduledTask?: Partial<Pick<ScheduledTaskConfig, 'schedule' | 'timeout'>>;
   /**
    * @description
-   * Site-owner-supplied Vendure content checks. No built-in Vendure-data
-   * checks ship with the plugin, so an empty/omitted list is valid.
+   * Site-owner-supplied Vendure content checks, for products and
+   * collections specifically. No built-in Vendure-data checks ship with the
+   * plugin, so an empty/omitted list is valid. For content that isn't a
+   * product or collection, see `additionalChecks`.
    */
   checks?: {
-    product?: ContentCheck[];
-    collection?: ContentCheck[];
+    product?: ProductContentCheck[];
+    collection?: CollectionContentCheck[];
   };
+  /**
+   * @description
+   * Site-owner-supplied checks for custom content the plugin has no
+   * built-in concept of — e.g. CMS content managed by another plugin. See
+   * {@link AdditionalContentCheck}.
+   */
+  additionalChecks?: AdditionalContentCheck[];
 }
