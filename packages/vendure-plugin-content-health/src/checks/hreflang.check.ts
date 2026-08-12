@@ -26,18 +26,21 @@ export function checkHreflang(args: HreflangCheckArgs): ContentCheckMessage[] {
   const { pageUrl, hreflangTags, enabledLanguageCodes, linkedPageTags } = args;
   const messages: ContentCheckMessage[] = [];
 
+  // hreflang values are case-insensitive per BCP47, so tags and enabled
+  // language codes are matched in lowercase to avoid false "missing
+  // language" warnings for a storefront that renders e.g. `hreflang="EN"`.
   const hrefByLanguage = new Map<string, string>();
   let hasXDefault = false;
   for (const tag of hreflangTags) {
     if (tag.hreflang.toLowerCase() === 'x-default') {
       hasXDefault = true;
     } else {
-      hrefByLanguage.set(tag.hreflang, tag.href);
+      hrefByLanguage.set(tag.hreflang.toLowerCase(), tag.href);
     }
   }
 
   for (const languageCode of enabledLanguageCodes) {
-    if (!hrefByLanguage.has(languageCode)) {
+    if (!hrefByLanguage.has(languageCode.toLowerCase())) {
       messages.push({
         source: 'hreflang',
         severity: 'warning',

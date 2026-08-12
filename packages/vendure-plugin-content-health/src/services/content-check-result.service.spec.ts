@@ -9,34 +9,36 @@ interface FakeFindOneOptions {
 
 /**
  * A minimal in-memory stand-in for `TransactionalConnection.getRepository`,
- * just enough to exercise the find-then-save upsert pattern without a real
- * database.
+ * just enough to exercise the atomic upsert pattern without a real database.
  */
 function createFakeConnection() {
   const rows: ContentCheckResult[] = [];
   let nextId = 1;
+  function findMatching(where: Record<string, unknown>) {
+    return rows.find(
+      (r) =>
+        r.entityType === where.entityType &&
+        String(r.entityId) === String(where.entityId) &&
+        String(r.channelId) === String(where.channelId) &&
+        r.languageCode === where.languageCode
+    );
+  }
   const repo = {
-    findOne: (options: FakeFindOneOptions) => {
-      const { where } = options;
-      return Promise.resolve(
-        rows.find(
-          (r) =>
-            r.entityType === where.entityType &&
-            String(r.entityId) === String(where.entityId) &&
-            String(r.channelId) === String(where.channelId) &&
-            r.languageCode === where.languageCode
-        ) ?? null
-      );
-    },
-    save: (entity: ContentCheckResult) => {
-      if (entity.id) {
-        const index = rows.findIndex((r) => r.id === entity.id);
-        rows[index] = entity;
-        return Promise.resolve(entity);
+    upsert: (entity: Partial<ContentCheckResult>) => {
+      const existing = findMatching(entity);
+      if (existing) {
+        Object.assign(existing, entity);
+      } else {
+        rows.push({ ...entity, id: nextId++ } as ContentCheckResult);
       }
-      entity.id = nextId++;
-      rows.push(entity);
-      return Promise.resolve(entity);
+      return Promise.resolve();
+    },
+    findOneOrFail: (options: FakeFindOneOptions) => {
+      const found = findMatching(options.where);
+      if (!found) {
+        return Promise.reject(new Error('Not found'));
+      }
+      return Promise.resolve(found);
     },
   };
   const connection = {

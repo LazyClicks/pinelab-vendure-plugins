@@ -105,7 +105,11 @@ export class ContentHealthResolver {
       });
     }
 
-    const filtered = applyOverviewFilter(items, options?.filter);
+    const filtered = applyOverviewFilter(
+      items,
+      options?.filter,
+      options?.filterOperator
+    );
     const sorted = applyOverviewSort(filtered, options?.sort);
     return paginateOverview(sorted, options?.skip, options?.take);
   }

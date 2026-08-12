@@ -80,39 +80,45 @@ export class ContentCheckResultService {
   }
 
   /**
-   * Upserts the result for a single (entity, channel, language) combination
-   * using the find-then-save pattern: insert when no existing row, update
-   * in place (fully replacing `messages`) otherwise.
+   * Upserts the result for a single (entity, channel, language) combination,
+   * fully replacing `messages`. Uses a single atomic `INSERT ... ON CONFLICT
+   * DO UPDATE` (keyed by the entity's unique constraint) rather than a
+   * find-then-save pattern, since the latter isn't safe under concurrent
+   * calls for the same key (e.g. two full scans overlapping, or a batch of
+   * `additionalChecks` results saved concurrently) — both could read "no
+   * existing row" before either write commits, causing a unique-constraint
+   * violation or a silently dropped update.
    */
   async saveResult(
     ctx: RequestContext,
     input: SaveContentCheckResultInput
   ): Promise<ContentCheckResult> {
     const repo = this.connection.getRepository(ctx, ContentCheckResult);
-    const existing = await repo.findOne({
-      where: {
-        entityType: input.entityType,
-        entityId: input.entityId.toString(),
-        channelId: input.channelId.toString(),
-        languageCode: input.languageCode as ContentCheckResult['languageCode'],
-      },
-    });
+    const entityType = input.entityType;
+    const entityId = input.entityId.toString();
+    const channelId = input.channelId.toString();
+    const languageCode = input.languageCode as ContentCheckResult['languageCode'];
     const hasError = input.messages.some((m) => m.severity === 'error');
     const hasWarning = input.messages.some((m) => m.severity === 'warning');
-    return repo.save(
-      new ContentCheckResult({
-        id: existing?.id,
-        entityType: input.entityType,
-        entityId: input.entityId,
-        channelId: input.channelId,
-        languageCode: input.languageCode as ContentCheckResult['languageCode'],
+
+    await repo.upsert(
+      {
+        entityType,
+        entityId,
+        channelId,
+        languageCode,
         url: input.url,
         label: input.label,
         hasError,
         hasWarning,
         messages: input.messages,
         checkedAt: input.checkedAt,
-      })
+      },
+      ['entityType', 'entityId', 'channelId', 'languageCode']
     );
+
+    return repo.findOneOrFail({
+      where: { entityType, entityId, channelId, languageCode },
+    });
   }
 }

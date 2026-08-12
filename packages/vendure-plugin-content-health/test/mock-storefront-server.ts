@@ -92,10 +92,14 @@ export function startMockStorefrontServer(): Promise<void> {
       const kind = segments[1] as 'products' | 'collections';
       const slug = segments[2];
       const pageUrl = url.toString();
-      sitemapIncludedUrls.add(pageUrl);
-      const html = slug.includes('broken')
-        ? renderBrokenPage()
-        : renderGoodPage(kind, slug);
+      const isBroken = slug.includes('broken');
+      // The broken demo page is deliberately excluded from the sitemap too,
+      // so the sitemap-inclusion check also fails for it — otherwise, once
+      // fetched once, it would silently start passing that check.
+      if (!isBroken) {
+        sitemapIncludedUrls.add(pageUrl);
+      }
+      const html = isBroken ? renderBrokenPage() : renderGoodPage(kind, slug);
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(html);
       return;

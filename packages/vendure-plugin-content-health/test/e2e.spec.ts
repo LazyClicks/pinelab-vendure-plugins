@@ -440,11 +440,21 @@ describe('ContentHealthPlugin (e2e)', () => {
   });
 
   it('11.2: updating a product triggers its own check and stores a new result', async () => {
+    // A prior test (the full scan) already left a saved result for this
+    // product, so merely waiting for `contentCheckResults.length > 0` would
+    // pass immediately regardless of whether this update actually triggers
+    // its own re-check. Wait for the configurable check to run again instead
+    // — that only happens on an actual (re-)check.
+    configurableCheckCalls.length = 0;
+
     await adminClient.query(UPDATE_PRODUCT, {
       input: { id: goodProductId, enabled: true },
     });
 
     const results = await waitFor(async () => {
+      if (!configurableCheckCalls.includes('good-product')) {
+        return undefined;
+      }
       const res = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
         entityType: 'PRODUCT',
         entityId: goodProductId,

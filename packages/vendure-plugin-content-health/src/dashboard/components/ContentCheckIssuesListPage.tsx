@@ -23,10 +23,11 @@ import {
  * `entityType` is passed through verbatim (not case-folded) since a custom
  * entity type from `additionalChecks` can be any casing the site owner
  * chose, and the issue detail route matches it exactly against the stored
- * value.
+ * value. `entityId` is also encoded since a custom entity's id is an
+ * arbitrary site-owner-chosen string, not necessarily URL-safe.
  */
 function issueDetailHref(entityType: string, entityId: string): string {
-  return `/content-health/issues/${encodeURIComponent(entityType)}/${entityId}`;
+  return `/content-health/issues/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`;
 }
 
 function ContentCheckIssuesListPage({ route }: { route: AnyRoute }) {

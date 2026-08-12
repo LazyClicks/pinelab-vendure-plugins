@@ -34,6 +34,7 @@ import { loggerCtx, PLUGIN_INIT_OPTIONS } from '../constants';
 import { ContentCheckResult } from '../entities/content-check-result.entity';
 import { ChannelContentScanCompletedEvent } from '../events/channel-content-scan-completed-event';
 import {
+  AdditionalCheckResult,
   ChannelScanFindingEntry,
   ContentCheckEntityType,
   ContentCheckMessage,
@@ -45,9 +46,6 @@ import { StorefrontPageFetcher } from './storefront-page-fetcher';
 
 @Injectable()
 export class ContentCheckService implements OnApplicationBootstrap {
-  /** Cleared at the start of every full scan; reused across entities within a scan. */
-  private readonly sitemapCache = new Map<string, SitemapFetchResult>();
-
   constructor(
     private connection: TransactionalConnection,
     private productService: ProductService,
@@ -108,13 +106,18 @@ export class ContentCheckService implements OnApplicationBootstrap {
     channelsScanned: number;
     entitiesChecked: number;
   }> {
-    this.sitemapCache.clear();
+    // Scoped to this call (not shared instance state), so concurrent scans
+    // (e.g. the scheduled task overlapping with a manual "Run full scan
+    // now") never clobber each other's cache. Shared across every channel
+    // in this run since cache keys are the actual resolved sitemap URL
+    // string, which naturally differs per channel/language.
+    const sitemapCache = new Map<string, SitemapFetchResult>();
     const channels = await this.connection.getRepository(Channel).find();
     let entitiesChecked = 0;
     let channelsScanned = 0;
     for (const channel of channels) {
       try {
-        entitiesChecked += await this.scanChannel(channel);
+        entitiesChecked += await this.scanChannel(channel, sitemapCache);
         channelsScanned++;
       } catch (e) {
         Logger.error(
@@ -127,7 +130,10 @@ export class ContentCheckService implements OnApplicationBootstrap {
     return { channelsScanned, entitiesChecked };
   }
 
-  private async scanChannel(channel: Channel): Promise<number> {
+  private async scanChannel(
+    channel: Channel,
+    sitemapCache: Map<string, SitemapFetchResult>
+  ): Promise<number> {
     const ctx = this.createCtxForChannel(channel);
     const languages = this.getEnabledLanguages(channel);
     const [products, collections] = await Promise.all([
@@ -173,7 +179,8 @@ export class ContentCheckService implements OnApplicationBootstrap {
         task.entityType,
         entity,
         channel,
-        task.languageCode
+        task.languageCode,
+        sitemapCache
       );
       if (result) {
         findings.push(toFindingEntry(task.entityType, result));
@@ -195,6 +202,13 @@ export class ContentCheckService implements OnApplicationBootstrap {
    * its own entities (via the supplied `Injector`) and reporting its own
    * entity type/id/label/url — there is no generic way for the plugin to
    * resolve those for content it has no built-in concept of.
+   *
+   * Results are grouped by (entityType, entityId, languageCode) and their
+   * messages merged before saving, since two different `additionalChecks`
+   * functions (or one function returning two items) can legitimately target
+   * the same entity/language — saving each item separately would let the
+   * last save silently overwrite the earlier ones' messages instead of
+   * combining them.
    */
   private async runAdditionalChecks(
     ctx: RequestContext,
@@ -205,11 +219,10 @@ export class ContentCheckService implements OnApplicationBootstrap {
       return [];
     }
     const injector = new Injector(this.moduleRef);
-    const findings: ChannelScanFindingEntry[] = [];
+    const allResults: AdditionalCheckResult[] = [];
     for (const check of additionalChecks) {
-      let results: Awaited<ReturnType<typeof check>>;
       try {
-        results = await check(ctx, injector);
+        allResults.push(...(await check(ctx, injector)));
       } catch (e) {
         Logger.error(
           `additionalChecks function failed for channel '${channel.code}': ${
@@ -218,31 +231,60 @@ export class ContentCheckService implements OnApplicationBootstrap {
           loggerCtx,
           asError(e).stack
         );
-        continue;
       }
-      for (const item of results) {
-        try {
-          const languageCode = item.languageCode ?? channel.defaultLanguageCode;
-          const savedResult = await this.resultService.saveResult(ctx, {
-            entityType: item.entityType,
-            entityId: item.entityId,
-            channelId: channel.id,
-            languageCode,
-            url: item.url,
-            label: item.label,
-            messages: item.messages,
-            checkedAt: new Date(),
-          });
-          findings.push(toFindingEntry(item.entityType, savedResult));
-        } catch (e) {
-          Logger.error(
-            `Failed to save an additionalChecks result (entityType '${item.entityType}', entityId '${item.entityId}') for channel '${channel.code}': ${
-              asError(e).message
-            }`,
-            loggerCtx,
-            asError(e).stack
-          );
-        }
+    }
+
+    interface MergedGroup {
+      entityType: string;
+      entityId: ID;
+      languageCode: LanguageCode;
+      label: string | undefined;
+      url: string | undefined;
+      messages: ContentCheckMessage[];
+    }
+    const groups = new Map<string, MergedGroup>();
+    for (const item of allResults) {
+      const languageCode = item.languageCode ?? channel.defaultLanguageCode;
+      const key = `${item.entityType}:${item.entityId}:${languageCode}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          entityType: item.entityType,
+          entityId: item.entityId,
+          languageCode,
+          label: undefined,
+          url: undefined,
+          messages: [],
+        };
+        groups.set(key, group);
+      }
+      group.label ??= item.label;
+      group.url ??= item.url;
+      group.messages.push(...item.messages);
+    }
+
+    const findings: ChannelScanFindingEntry[] = [];
+    for (const group of groups.values()) {
+      try {
+        const savedResult = await this.resultService.saveResult(ctx, {
+          entityType: group.entityType,
+          entityId: group.entityId,
+          channelId: channel.id,
+          languageCode: group.languageCode,
+          url: group.url,
+          label: group.label,
+          messages: group.messages,
+          checkedAt: new Date(),
+        });
+        findings.push(toFindingEntry(group.entityType, savedResult));
+      } catch (e) {
+        Logger.error(
+          `Failed to save an additionalChecks result (entityType '${group.entityType}', entityId '${group.entityId}') for channel '${channel.code}': ${
+            asError(e).message
+          }`,
+          loggerCtx,
+          asError(e).stack
+        );
       }
     }
     return findings;
@@ -324,11 +366,10 @@ export class ContentCheckService implements OnApplicationBootstrap {
     entityId: ID,
     channel: Channel
   ): Promise<void> {
-    // Unlike `runFullScan` (where the cache is deliberately reused across
-    // many entities within one pass), a single-entity check should always
-    // see the current sitemap rather than one cached from an unrelated,
-    // possibly much earlier, scan.
-    this.sitemapCache.clear();
+    // Freshly created per call (not shared instance state), so a
+    // single-entity check always sees the current sitemap rather than one
+    // cached from an unrelated, possibly much earlier or concurrent, scan.
+    const sitemapCache = new Map<string, SitemapFetchResult>();
     const languages = this.getEnabledLanguages(channel);
     for (const languageCode of languages) {
       const langCtx = this.createCtxForChannel(channel, languageCode);
@@ -336,7 +377,14 @@ export class ContentCheckService implements OnApplicationBootstrap {
       if (!entity) {
         continue;
       }
-      await this.checkEntity(langCtx, entityType, entity, channel, languageCode);
+      await this.checkEntity(
+        langCtx,
+        entityType,
+        entity,
+        channel,
+        languageCode,
+        sitemapCache
+      );
     }
   }
 
@@ -361,7 +409,8 @@ export class ContentCheckService implements OnApplicationBootstrap {
     entityType: ContentCheckEntityType,
     entity: Product | Collection,
     channel: Channel,
-    languageCode: LanguageCode
+    languageCode: LanguageCode,
+    sitemapCache: Map<string, SitemapFetchResult> = new Map()
   ): Promise<ContentCheckResult | undefined> {
     if (entity.customFields?.excludedFromContentChecks) {
       return undefined;
@@ -416,7 +465,13 @@ export class ContentCheckService implements OnApplicationBootstrap {
         );
       }
       messages.push(
-        ...(await this.runSitemapCheck(ctx, channel, languageCode, resolvedUrl))
+        ...(await this.runSitemapCheck(
+          ctx,
+          channel,
+          languageCode,
+          resolvedUrl,
+          sitemapCache
+        ))
       );
     }
 
@@ -526,7 +581,8 @@ export class ContentCheckService implements OnApplicationBootstrap {
     ctx: RequestContext,
     channel: Channel,
     languageCode: LanguageCode,
-    resolvedUrl: string
+    resolvedUrl: string,
+    sitemapCache: Map<string, SitemapFetchResult>
   ): Promise<ContentCheckMessage[]> {
     if (!this.options.getSitemapUrl) {
       return [];
@@ -543,13 +599,19 @@ export class ContentCheckService implements OnApplicationBootstrap {
     if (!sitemapUrl) {
       return [];
     }
-    let result = this.sitemapCache.get(sitemapUrl);
+    let result = sitemapCache.get(sitemapUrl);
     if (!result) {
       result = await this.sitemapFetcher.fetch(
         sitemapUrl,
         this.options.requestTimeoutMs ?? 10000
       );
-      this.sitemapCache.set(sitemapUrl, result);
+      // Only a successful fetch is cached — caching a transient failure
+      // would make one bad fetch poison the sitemap-inclusion check for
+      // every other entity sharing this sitemap URL for the rest of the
+      // scan, instead of just this one.
+      if (result.ok) {
+        sitemapCache.set(sitemapUrl, result);
+      }
     }
     if (!result.ok) {
       return [sitemapUnavailableMessage(result.error)];

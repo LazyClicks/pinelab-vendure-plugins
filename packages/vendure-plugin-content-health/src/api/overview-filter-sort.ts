@@ -1,9 +1,19 @@
+import { UserInputError } from '@vendure/core';
+
 export interface StringOperatorsArg {
   eq?: string;
   contains?: string;
   notContains?: string;
   in?: string[];
   notIn?: string[];
+  /**
+   * Not supported: this filter is evaluated in-process (not pushed down to
+   * the database), so an unbounded `regex` operator would let an
+   * API-supplied pattern block the Node event loop (catastrophic
+   * backtracking). Reused from Vendure's core `StringOperators` input for
+   * schema consistency, but rejected at runtime — see
+   * {@link matchesStringOperator}.
+   */
   regex?: string;
 }
 
@@ -36,6 +46,11 @@ export interface FilterableOverviewItem {
 }
 
 function matchesStringOperator(value: string, op: StringOperatorsArg): boolean {
+  if (op.regex !== undefined) {
+    throw new UserInputError(
+      'The `regex` string filter operator is not supported on contentCheckOverview.'
+    );
+  }
   if (op.eq !== undefined) {
     return value === op.eq;
   }
@@ -50,9 +65,6 @@ function matchesStringOperator(value: string, op: StringOperatorsArg): boolean {
   }
   if (op.notIn !== undefined) {
     return !op.notIn.includes(value);
-  }
-  if (op.regex !== undefined) {
-    return new RegExp(op.regex).test(value);
   }
   return true;
 }
@@ -69,7 +81,8 @@ function matchesBooleanOperator(value: boolean, op: BooleanOperatorsArg): boolea
  */
 export function applyOverviewFilter<T extends FilterableOverviewItem>(
   items: T[],
-  filter: ContentCheckOverviewFilterArg | undefined
+  filter: ContentCheckOverviewFilterArg | undefined,
+  filterOperator: 'AND' | 'OR' | undefined
 ): T[] {
   if (!filter) {
     return items;
@@ -96,7 +109,9 @@ export function applyOverviewFilter<T extends FilterableOverviewItem>(
   if (predicates.length === 0) {
     return items;
   }
-  return items.filter((item) => predicates.every((predicate) => predicate(item)));
+  return filterOperator === 'OR'
+    ? items.filter((item) => predicates.some((predicate) => predicate(item)))
+    : items.filter((item) => predicates.every((predicate) => predicate(item)));
 }
 
 export function applyOverviewSort<T extends FilterableOverviewItem>(
