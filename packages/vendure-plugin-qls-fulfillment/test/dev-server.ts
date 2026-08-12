@@ -1,4 +1,4 @@
-import { AdminUiPlugin } from '@vendure/admin-ui-plugin';
+import { DashboardPlugin } from '@vendure/dashboard/plugin';
 import {
   configureDefaultOrderProcess,
   DefaultLogger,
@@ -129,14 +129,9 @@ import { convertProcessSignalToExitCode } from 'util';
       }),
       DefaultSchedulerPlugin,
       DefaultSearchPlugin,
-      AdminUiPlugin.init({
-        port: 3002,
-        route: 'admin',
-        app: compileUiExtensions({
-          outputPath: path.join(__dirname, '__admin-ui'),
-          extensions: [QlsPlugin.ui],
-          devMode: true,
-        }),
+      DashboardPlugin.init({
+        route: 'dashboard',
+        appDir: path.join(__dirname, '../dist/dashboard'),
       }),
     ],
     schedulerOptions: {
