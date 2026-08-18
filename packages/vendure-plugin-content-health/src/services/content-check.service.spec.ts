@@ -61,32 +61,48 @@ const channel = {
 } as unknown as Channel;
 const ctx = {} as unknown as RequestContext;
 
-function createEntity(
-  excludedFromContentChecks: boolean
-): Product | Collection {
-  return {
-    id: '10',
-    customFields: { excludedFromContentChecks },
-  } as unknown as Product;
+function createEntity(): Product | Collection {
+  return { id: '10' } as unknown as Product;
 }
 
 describe('ContentCheckService.checkEntity', () => {
-  it('short-circuits an excluded entity: no result is written, no error is produced', async () => {
+  it('short-circuits an entity rejected by shouldCheckEntity: no result is written, no error is produced', async () => {
+    const shouldCheckEntity = vi.fn(() => false);
     const { service, saveResult } = createService({
       getProductUrl: vi.fn(),
       getCollectionUrl: vi.fn(),
+      shouldCheckEntity,
     });
 
     const result = await service.checkEntity(
       ctx,
       'product',
-      createEntity(true),
+      createEntity(),
       channel,
       LanguageCode.en
     );
 
     expect(result).toBeUndefined();
     expect(saveResult).not.toHaveBeenCalled();
+    expect(shouldCheckEntity).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks an entity as normal when shouldCheckEntity is not configured', async () => {
+    const { service, saveResult } = createService({
+      getProductUrl: vi.fn(() => Promise.resolve(undefined)),
+      getCollectionUrl: vi.fn(),
+    });
+
+    const result = await service.checkEntity(
+      ctx,
+      'product',
+      createEntity(),
+      channel,
+      LanguageCode.en
+    );
+
+    expect(result).toBeDefined();
+    expect(saveResult).toHaveBeenCalledTimes(1);
   });
 
   it('turns a thrown configurable check into a single internal error, without stopping the remaining checks', async () => {
@@ -108,7 +124,7 @@ describe('ContentCheckService.checkEntity', () => {
     await service.checkEntity(
       ctx,
       'product',
-      createEntity(false),
+      createEntity(),
       channel,
       LanguageCode.en
     );

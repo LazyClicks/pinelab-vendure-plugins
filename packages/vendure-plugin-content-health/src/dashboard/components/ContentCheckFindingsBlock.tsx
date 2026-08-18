@@ -1,6 +1,6 @@
 import { api, Button } from '@vendure/dashboard';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangleIcon, RefreshCwIcon } from 'lucide-react';
+import { RefreshCwIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   contentCheckResultsDocument,
@@ -10,15 +10,15 @@ import {
 import { ContentCheckFindingsList } from './ContentCheckFindingsList';
 
 interface ContentCheckFindingsBlockInnerProps {
-  context: { entity?: { id?: string; customFields?: Record<string, unknown> } };
+  context: { entity?: { id?: string } };
   entityType: 'PRODUCT' | 'COLLECTION';
 }
 
 /**
  * Shared implementation for the product-detail and collection-detail page
- * blocks: shows the exclusion notice when the entity is excluded, otherwise
- * the entity's current warnings/errors across every checked channel/language,
- * plus a button to manually re-check just this entity right now.
+ * blocks: shows the entity's current warnings/errors across every checked
+ * channel/language, plus a button to manually re-check just this entity
+ * right now.
  */
 function ContentCheckFindingsBlockInner({
   context,
@@ -26,7 +26,6 @@ function ContentCheckFindingsBlockInner({
 }: ContentCheckFindingsBlockInnerProps) {
   const entity = context.entity;
   const entityId = entity?.id;
-  const excluded = !!entity?.customFields?.excludedFromContentChecks;
   const queryClient = useQueryClient();
   const queryKey = ['content-check-results', entityType, entityId];
 
@@ -37,7 +36,7 @@ function ContentCheckFindingsBlockInner({
         entityType,
         entityId: entityId as string,
       }),
-    enabled: !!entityId && !excluded,
+    enabled: !!entityId,
   });
 
   const checkNowMutation = useMutation({
@@ -83,15 +82,6 @@ function ContentCheckFindingsBlockInner({
       {checkNowMutation.isPending ? 'Checking…' : 'Check now'}
     </Button>
   );
-
-  if (excluded) {
-    return (
-      <div className="flex items-center gap-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 px-3 py-2 text-sm">
-        <AlertTriangleIcon className="h-4 w-4 shrink-0 text-yellow-600" />
-        <span>Excluded from SEO/content checks — probably not live.</span>
-      </div>
-    );
-  }
 
   if (!entityId || isLoading) {
     return null;

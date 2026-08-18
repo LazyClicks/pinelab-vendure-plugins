@@ -3,7 +3,6 @@ import { adminApiExtensions } from './api/api-extensions';
 import { ContentHealthResolver } from './api/content-health.resolver';
 import { buildContentHealthScanTask } from './config/content-health-scheduled-task';
 import { PLUGIN_INIT_OPTIONS } from './constants';
-import { buildExcludedFromContentChecksCustomField } from './custom-fields';
 import { ContentCheckResult } from './entities/content-check-result.entity';
 import { ContentCheckResultService } from './services/content-check-result.service';
 import { ContentCheckService } from './services/content-check.service';
@@ -38,10 +37,6 @@ import { ContentHealthPluginOptions } from './types';
     resolvers: [ContentHealthResolver],
   },
   configuration: (config) => {
-    config.customFields.Product.push(buildExcludedFromContentChecksCustomField());
-    config.customFields.Collection.push(
-      buildExcludedFromContentChecksCustomField()
-    );
     config.schedulerOptions.tasks.push(
       buildContentHealthScanTask(
         ContentHealthPlugin.options?.scheduledTask

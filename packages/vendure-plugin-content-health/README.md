@@ -28,7 +28,7 @@ plugins: [
     // Required: resolve the storefront URL for a product, given the channel and language.
     // Kept separate from `getCollectionUrl` since products and collections often follow
     // different URL structures (e.g. a flat product path vs. a nested category tree).
-    // Returning `undefined` for a non-excluded product is recorded as an error, not silently skipped.
+    // Returning `undefined` for an eligible product is recorded as an error, not silently skipped.
     getProductUrl: (ctx, { product, languageCode }) =>
       `https://storefront.example.com/${languageCode}/products/${product.slug}`,
     // Required: resolve the storefront URL for a collection, given the channel and language.
@@ -38,6 +38,11 @@ plugins: [
     // Omit (or return `undefined`) to skip the sitemap-inclusion check for a channel/language.
     getSitemapUrl: (ctx, { channel, languageCode }) =>
       `https://storefront.example.com/${languageCode}/sitemap.xml`,
+    // Optional: determines whether an entity is eligible for checks at all.
+    // Apply your own business rules here (e.g. a `hidden` or
+    // `onlyDisplayAfterDate` custom field) — omit to check everything.
+    shouldCheckEntity: (ctx, entity) =>
+      'enabled' in entity ? entity.enabled : !entity.isPrivate,
     // Optional, defaults shown:
     maxRedirects: 5,
     requestTimeoutMs: 10000,
@@ -76,18 +81,18 @@ Every strategy function (`getProductUrl`, `getCollectionUrl`, `checks`, `additio
 
 The dashboard extensions are provided as a React Dashboard extension — no Admin UI compilation step is needed:
 
-- A findings block on the product/collection detail page (with a "Check now" button and the exclusion notice).
+- A findings block on the product/collection detail page, with a "Check now" button.
 - A dashboard-home overview widget, linking through to the full issues page.
 - A full, filterable, paginated **"SEO / content issues" list page** under the Catalog nav section (`/content-health/issues`), listing every entity with a current warning or error — deduplicated across every language it was checked in, with an error/warning count, a message preview, and the affected languages. Supports searching by name and filtering by type and severity (errors vs. warnings-only). Each row has a "Go to entity" button for direct navigation (to the product/collection detail page for the built-ins, or the URL the `additionalChecks` result provided for a custom entity type — hidden if none was given), and clicking the name goes to this plugin's own **issue detail page** (`/content-health/issues/:entityType/:entityId`), which shows the entity's full findings across every checked language and its own "Go to entity" link. For products/collections, a "Check now" button re-checks the entity on demand, and a deleted entity is shown with a "could not be found" state rather than a broken link; a blank/whitespace-only name falls back to `Untitled product #<id>` / `Untitled collection #<id>`. Custom entity types (from `additionalChecks`) have no "Check now" button — see [below](#additionalchecks-custom-entities) — and use the `label` captured at check time instead, falling back to `Untitled <entityType> #<id>` if blank.
 - An error-only alert, also linking through to the issues list.
 
-## Custom fields
+## Entity eligibility
 
-Adds an `excludedFromContentChecks` boolean custom field to both `Product` and `Collection` (default `false`). When enabled, the entity is skipped by every scheduled full scan, on-demand full scan, and update-triggered check, and its detail page shows a warning that it is excluded from SEO/content checks and probably not live.
+The plugin doesn't own any field for excluding a product or collection from checks — that would collide with whatever business rules you already use to mark something as hidden or not-yet-live (a `hidden` flag, an `onlyDisplayAfterDate` field, etc.). Instead, supply a `shouldCheckEntity(ctx, entity)` function; when it resolves `false` for a given product or collection, that entity is skipped by the scheduled full scan, an on-demand full scan, and the per-entity update-triggered check. Omit it (the default) to check every product and collection.
 
 ## Triggers
 
-- **Scheduled full scan**: registered as a `ScheduledTask` (id `content-health-full-scan`), checking every non-excluded product and collection across every enabled channel and language. Runnable on demand via Vendure's built-in Scheduled Tasks admin screen. Requires a scheduler plugin (e.g. `DefaultSchedulerPlugin`) to actually run on a schedule.
+- **Scheduled full scan**: registered as a `ScheduledTask` (id `content-health-full-scan`), checking every eligible product and collection (see [Entity eligibility](#entity-eligibility)) across every enabled channel and language. Runnable on demand via Vendure's built-in Scheduled Tasks admin screen. Requires a scheduler plugin (e.g. `DefaultSchedulerPlugin`) to actually run on a schedule.
 - **Per-entity check on update**: whenever a product or collection is updated, it is automatically re-checked across all of its resolved channel/language combinations — no action needed.
 - **Manual check, per entity**: a "Check now" button on the product/collection detail page (in the findings block) re-checks just that entity on demand, without needing to edit it. Backed by the `runContentCheckForProduct`/`runContentCheckForCollection` mutations (`Permission.UpdateProduct`/`Permission.UpdateCollection`). Unlike the automatic recheck on update — which re-checks every channel the entity belongs to, since editing shared content can affect the outcome everywhere it's used — the manual check is scoped to the active channel only, so triggering it from Channel A never reads or writes results for Channel B.
 - **Manual check, full catalog**: a "Run full scan now" button on the "SEO / content issues" dashboard page. Backed by the `runContentHealthFullScan` mutation (`Permission.UpdateCatalog`), which awaits the same `runFullScan()` used by the scheduled task. On a very large catalog this may take a while and could exceed typical HTTP/GraphQL request timeouts — for large catalogs, prefer the Scheduled Tasks admin screen's "Run" action instead, since that execution isn't bound by a request timeout.

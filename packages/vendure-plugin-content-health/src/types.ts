@@ -244,4 +244,18 @@ export interface ContentHealthPluginOptions {
    * {@link AdditionalContentCheck}.
    */
   additionalChecks?: AdditionalContentCheck[];
+  /**
+   * @description
+   * Determines whether a given product or collection is eligible for
+   * content/SEO checks. Use this to apply your own business rules for
+   * excluding entities (e.g. a `hidden` or `onlyDisplayAfterDate` custom
+   * field) rather than relying on a field owned by this plugin. Evaluated
+   * before the scheduled full scan, an on-demand full scan, and the
+   * per-entity check triggered by a product/collection update. When
+   * omitted, every product and collection is eligible.
+   */
+  shouldCheckEntity?: (
+    ctx: RequestContext,
+    entity: Product | Collection
+  ) => boolean | Promise<boolean>;
 }

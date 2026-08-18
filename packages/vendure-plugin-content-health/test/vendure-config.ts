@@ -30,9 +30,6 @@ export const config: VendureConfig = mergeConfig(testConfig, {
   },
   plugins: [
     ContentHealthPlugin.init({
-      // Products and collections often have different URL structures
-      // (e.g. a flat /products/:slug vs. a nested category tree), so each
-      // gets its own resolver.
       getProductUrl: (ctx, { product, languageCode }) =>
         `http://localhost:${MOCK_STOREFRONT_PORT}/${languageCode}/products/${product.slug}`,
       getCollectionUrl: (ctx, { collection, languageCode }) =>
@@ -40,9 +37,9 @@ export const config: VendureConfig = mergeConfig(testConfig, {
       getSitemapUrl: () =>
         `http://localhost:${MOCK_STOREFRONT_PORT}/sitemap.xml`,
       maxRedirects: 5,
+      shouldCheckEntity: (ctx, entity) =>
+        'enabled' in entity ? entity.enabled : !entity.isPrivate,
       checks: {
-        // Sample configurable Vendure content check: flag products with a
-        // suspiciously short (or missing) description.
         product: [
           (ctx, { product }) => {
             const description = (product.description ?? '') as string;
@@ -62,11 +59,6 @@ export const config: VendureConfig = mergeConfig(testConfig, {
         ],
       },
       additionalChecks: [
-        // Sample additionalChecks function: content that isn't a product or
-        // collection. This demonstrates the pattern (fetch whatever you
-        // want via the injector, report your own entity type/id/label/url)
-        // using a built-in Vendure entity (Administrator) as a stand-in for
-        // e.g. CMS content managed by another plugin.
         async (ctx, injector) => {
           const connection = injector.get(TransactionalConnection);
           const administrators = await connection

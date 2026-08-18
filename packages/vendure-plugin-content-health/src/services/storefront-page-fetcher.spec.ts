@@ -1,17 +1,30 @@
-import nock from 'nock';
-import { afterEach, describe, expect, it } from 'vitest';
+import { MockAgent, setGlobalDispatcher } from 'undici';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { StorefrontPageFetcher } from './storefront-page-fetcher';
 
 describe('StorefrontPageFetcher', () => {
   const fetcher = new StorefrontPageFetcher();
+  let mockAgent: MockAgent;
 
-  afterEach(() => nock.cleanAll());
+  beforeEach(() => {
+    mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+  });
+
+  afterEach(async () => {
+    await mockAgent.close();
+  });
 
   it('succeeds within the redirect limit', async () => {
-    nock('https://shop.example.com')
-      .get('/a')
-      .reply(302, undefined, { Location: 'https://shop.example.com/b' })
-      .get('/b')
+    const client = mockAgent.get('https://shop.example.com');
+    client
+      .intercept({ path: '/a', method: 'GET' })
+      .reply(302, undefined, {
+        headers: { location: 'https://shop.example.com/b' },
+      });
+    client
+      .intercept({ path: '/b', method: 'GET' })
       .reply(200, '<html><title>Hi</title></html>');
 
     const result = await fetcher.fetch('https://shop.example.com/a', {
@@ -25,13 +38,18 @@ describe('StorefrontPageFetcher', () => {
   });
 
   it('fails when the redirect chain exceeds the configured maximum', async () => {
-    nock('https://shop.example.com')
-      .get('/a')
-      .reply(302, undefined, { Location: 'https://shop.example.com/b' })
-      .get('/b')
-      .reply(302, undefined, { Location: 'https://shop.example.com/c' })
-      .get('/c')
-      .reply(200, 'ok');
+    const client = mockAgent.get('https://shop.example.com');
+    client
+      .intercept({ path: '/a', method: 'GET' })
+      .reply(302, undefined, {
+        headers: { location: 'https://shop.example.com/b' },
+      });
+    client
+      .intercept({ path: '/b', method: 'GET' })
+      .reply(302, undefined, {
+        headers: { location: 'https://shop.example.com/c' },
+      });
+    client.intercept({ path: '/c', method: 'GET' }).reply(200, 'ok');
 
     const result = await fetcher.fetch('https://shop.example.com/a', {
       maxRedirects: 1,
@@ -44,9 +62,12 @@ describe('StorefrontPageFetcher', () => {
   });
 
   it('fails on an unreachable host (connection error)', async () => {
-    nock('https://shop.example.com')
-      .get('/down')
-      .replyWithError({ message: 'connection refused', code: 'ECONNREFUSED' });
+    const client = mockAgent.get('https://shop.example.com');
+    client
+      .intercept({ path: '/down', method: 'GET' })
+      .replyWithError(
+        Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' })
+      );
 
     const result = await fetcher.fetch('https://shop.example.com/down');
 
@@ -54,7 +75,10 @@ describe('StorefrontPageFetcher', () => {
   });
 
   it('fails on a non-2xx final response', async () => {
-    nock('https://shop.example.com').get('/missing').reply(404, 'not found');
+    const client = mockAgent.get('https://shop.example.com');
+    client
+      .intercept({ path: '/missing', method: 'GET' })
+      .reply(404, 'not found');
 
     const result = await fetcher.fetch('https://shop.example.com/missing');
 

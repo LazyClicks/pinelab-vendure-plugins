@@ -15,7 +15,7 @@
   "homepage": "https://plugins.pinelab.studio/",
   "repository": "https://github.com/Pinelab-studio/pinelab-vendure-plugins",
   "license": "MIT",
-  "private": true,
+  "private": false,
   "publishConfig": {
     "access": "public"
   },
@@ -35,7 +35,6 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "axios": "^1.7.9",
     "catch-unknown": "^2.0.0",
     "cheerio": "^1.0.0",
     "fast-xml-parser": "^4.5.1"

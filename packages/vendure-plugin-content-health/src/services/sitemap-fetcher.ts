@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import axios from 'axios';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 
 export type SitemapFetchResult =
@@ -42,12 +41,14 @@ export class SitemapFetcher {
 
     let xml: string;
     try {
-      const response = await axios.get<string>(url, {
-        timeout: timeoutMs,
-        responseType: 'text',
-        validateStatus: (status) => status >= 200 && status < 300,
-      });
-      xml = response.data;
+      const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (response.status < 200 || response.status >= 300) {
+        return {
+          ok: false,
+          error: `Failed to fetch sitemap '${url}': received non-2xx status ${response.status}.`,
+        };
+      }
+      xml = await response.text();
     } catch (e) {
       const err = e as { message?: string };
       return {

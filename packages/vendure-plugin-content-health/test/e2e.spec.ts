@@ -9,7 +9,7 @@ import {
   TestServer,
 } from '@vendure/testing';
 import gql from 'graphql-tag';
-import nock from 'nock';
+import { MockAgent, setGlobalDispatcher } from 'undici';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { initialData } from '../../test/src/initial-data';
 import { testPaymentMethod } from '../../test/src/test-payment-method';
@@ -40,16 +40,6 @@ const CREATE_COLLECTION = gql`
   mutation CreateTestCollection($input: CreateCollectionInput!) {
     createCollection(input: $input) {
       id
-    }
-  }
-`;
-const GET_PRODUCT_CUSTOM_FIELDS = gql`
-  query GetTestProduct($id: ID!) {
-    product(id: $id) {
-      id
-      customFields {
-        excludedFromContentChecks
-      }
     }
   }
 `;
@@ -173,6 +163,7 @@ describe('ContentHealthPlugin (e2e)', () => {
   let server: TestServer;
   let adminClient: SimpleGraphQLClient;
   let serverStarted = false;
+  let mockAgent: MockAgent;
 
   let goodProductId: string;
   let goodCollectionId: string;
@@ -215,6 +206,12 @@ describe('ContentHealthPlugin (e2e)', () => {
           getCollectionUrl: (ctx, { collection, languageCode }) =>
             `${STOREFRONT_ORIGIN}/${languageCode}/collections/${collection.slug}`,
           getSitemapUrl: () => `${STOREFRONT_ORIGIN}/sitemap.xml`,
+          // Compared by slug, not id: `entity.id` here is the raw internal
+          // id, while `excludedProductId` (assigned below, after product
+          // creation) is the GraphQL-encoded admin-facing id — the two are
+          // not directly comparable.
+          shouldCheckEntity: (ctx, entity) =>
+            entity.slug !== 'excluded-product',
           checks: {
             product: [
               (ctx, { product }) => {
@@ -287,9 +284,10 @@ describe('ContentHealthPlugin (e2e)', () => {
             description: 'A product excluded from content checks.',
           },
         ],
-        customFields: { excludedFromContentChecks: true },
       },
     });
+    // Referenced by `shouldCheckEntity` above (plugin init happens before
+    // this, but the predicate is only invoked later, once a scan runs).
     excludedProductId = excludedProduct.createProduct.id;
 
     const goodCollection = await adminClient.query(CREATE_COLLECTION, {
@@ -317,30 +315,34 @@ describe('ContentHealthPlugin (e2e)', () => {
     const goodProductUrl = `${STOREFRONT_ORIGIN}/en/products/good-product`;
     const goodCollectionUrl = `${STOREFRONT_ORIGIN}/en/collections/good-collection`;
     const brokenProductUrl = `${STOREFRONT_ORIGIN}/en/products/broken-product`;
-    nock(STOREFRONT_ORIGIN)
-      .persist()
-      .get('/en/products/good-product')
+    mockAgent = new MockAgent();
+    // Unmocked requests reject immediately instead of attempting real
+    // network — this is what makes `broken-product` (deliberately left
+    // unmocked below) simulate a page-fetch failure.
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    const storefrontClient = mockAgent.get(STOREFRONT_ORIGIN);
+    storefrontClient
+      .intercept({ path: '/en/products/good-product', method: 'GET' })
       .reply(200, goodProductHtml(goodProductUrl))
-      .get('/en/collections/good-collection')
+      .persist();
+    storefrontClient
+      .intercept({ path: '/en/collections/good-collection', method: 'GET' })
       .reply(200, goodCollectionHtml(goodCollectionUrl))
-      .get('/sitemap.xml')
-      .reply(200, sitemapXml([goodProductUrl, goodCollectionUrl, brokenProductUrl]));
+      .persist();
+    storefrontClient
+      .intercept({ path: '/sitemap.xml', method: 'GET' })
+      .reply(200, sitemapXml([goodProductUrl, goodCollectionUrl, brokenProductUrl]))
+      .persist();
   }, 60000);
 
   afterAll(async () => {
-    nock.cleanAll();
+    await mockAgent.close();
     await server.destroy();
   }, 100000);
 
   it('Should start successfully', () => {
     expect(serverStarted).toBe(true);
-  });
-
-  it('11.4: excluded product detail query reflects the exclusion flag', async () => {
-    const { product } = await adminClient.query(GET_PRODUCT_CUSTOM_FIELDS, {
-      id: excludedProductId,
-    });
-    expect(product.customFields.excludedFromContentChecks).toBe(true);
   });
 
   it('11.3 + 11.5: full scan checks all non-excluded entities, isolates a broken one, and publishes one event per channel', async () => {
@@ -466,10 +468,10 @@ describe('ContentHealthPlugin (e2e)', () => {
   }, 20000);
 
   it('11.4: updating the excluded product does not produce a check result', async () => {
-    // No nock mock registered for this entity's URL: if the exclusion
-    // short-circuit were broken, the resulting fetch failure would still
-    // surface as a saved error result, so this assertion is meaningful
-    // either way.
+    // No mock intercept registered for this entity's URL: if the
+    // `shouldCheckEntity` short-circuit were broken, the resulting fetch
+    // failure would still surface as a saved error result, so this
+    // assertion is meaningful either way.
     await adminClient.query(UPDATE_PRODUCT, {
       input: { id: excludedProductId, enabled: true },
     });
@@ -513,10 +515,11 @@ describe('ContentHealthPlugin (e2e)', () => {
     // mock from beforeAll already includes this URL) -> re-check replaces
     // the result and it drops off the overview. Registered as `.persist()`
     // so that a duplicate/repeated update event still sees the fixed page.
-    nock(STOREFRONT_ORIGIN)
-      .persist()
-      .get('/en/products/broken-product')
-      .reply(200, goodProductHtml(brokenProductUrl));
+    mockAgent
+      .get(STOREFRONT_ORIGIN)
+      .intercept({ path: '/en/products/broken-product', method: 'GET' })
+      .reply(200, goodProductHtml(brokenProductUrl))
+      .persist();
 
     await adminClient.query(UPDATE_PRODUCT, {
       input: { id: brokenProductId, enabled: true },

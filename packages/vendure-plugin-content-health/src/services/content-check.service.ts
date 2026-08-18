@@ -137,8 +137,8 @@ export class ContentCheckService implements OnApplicationBootstrap {
     const ctx = this.createCtxForChannel(channel);
     const languages = this.getEnabledLanguages(channel);
     const [products, collections] = await Promise.all([
-      this.findAllNonExcludedProducts(ctx),
-      this.findAllNonExcludedCollections(ctx),
+      this.findEligibleProducts(ctx),
+      this.findEligibleCollections(ctx),
     ]);
 
     interface Task {
@@ -412,7 +412,7 @@ export class ContentCheckService implements OnApplicationBootstrap {
     languageCode: LanguageCode,
     sitemapCache: Map<string, SitemapFetchResult> = new Map()
   ): Promise<ContentCheckResult | undefined> {
-    if (entity.customFields?.excludedFromContentChecks) {
+    if (!(await this.isEligible(ctx, entity))) {
       return undefined;
     }
 
@@ -638,17 +638,34 @@ export class ContentCheckService implements OnApplicationBootstrap {
       : [channel.defaultLanguageCode];
   }
 
-  private async findAllNonExcludedProducts(
-    ctx: RequestContext
-  ): Promise<Product[]> {
+  /**
+   * `shouldCheckEntity` is evaluated once per entity here (to skip building
+   * per-language tasks for ineligible entities during a full scan) and
+   * again inside `checkEntity` (the only enforcement point reached by the
+   * per-entity update-triggered check and the manual "Check now" mutation,
+   * neither of which goes through this pre-filter).
+   */
+  private async isEligible(
+    ctx: RequestContext,
+    entity: Product | Collection
+  ): Promise<boolean> {
+    return (
+      !this.options.shouldCheckEntity ||
+      (await this.options.shouldCheckEntity(ctx, entity))
+    );
+  }
+
+  private async findEligibleProducts(ctx: RequestContext): Promise<Product[]> {
     const products: Product[] = [];
     const take = 100;
     let skip = 0;
     for (;;) {
       const page = await this.productService.findAll(ctx, { take, skip });
-      products.push(
-        ...page.items.filter((p) => !p.customFields?.excludedFromContentChecks)
-      );
+      for (const product of page.items) {
+        if (await this.isEligible(ctx, product)) {
+          products.push(product);
+        }
+      }
       skip += take;
       if (skip >= page.totalItems) {
         break;
@@ -657,7 +674,7 @@ export class ContentCheckService implements OnApplicationBootstrap {
     return products;
   }
 
-  private async findAllNonExcludedCollections(
+  private async findEligibleCollections(
     ctx: RequestContext
   ): Promise<Collection[]> {
     const collections: Collection[] = [];
@@ -665,11 +682,11 @@ export class ContentCheckService implements OnApplicationBootstrap {
     let skip = 0;
     for (;;) {
       const page = await this.collectionService.findAll(ctx, { take, skip });
-      collections.push(
-        ...page.items.filter(
-          (c) => !c.isRoot && !c.customFields?.excludedFromContentChecks
-        )
-      );
+      for (const collection of page.items) {
+        if (!collection.isRoot && (await this.isEligible(ctx, collection))) {
+          collections.push(collection);
+        }
+      }
       skip += take;
       if (skip >= page.totalItems) {
         break;
