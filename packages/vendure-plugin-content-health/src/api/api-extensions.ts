@@ -81,7 +81,10 @@ export const adminApiExtensions = gql`
 
   extend type Query {
     "Latest check results for a single entity, scoped to the active channel, across every language it was checked in."
-    contentCheckResults(entityType: String!, entityId: String!): [ContentCheckResult!]!
+    contentCheckResults(
+      entityType: String!
+      entityId: String!
+    ): [ContentCheckResult!]!
     "Every entity in the active channel that currently has at least one warning or error, in any checked language."
     contentCheckOverview(
       options: ContentCheckOverviewListOptions

@@ -23,7 +23,26 @@ function createFakeConnection() {
         r.languageCode === where.languageCode
     );
   }
+  let queryChannelId: string | undefined;
+  const queryBuilder = {
+    where: (_condition: string, params: { channelId: string }) => {
+      queryChannelId = params.channelId;
+      return queryBuilder;
+    },
+    andWhere: () => queryBuilder,
+    orderBy: () => queryBuilder,
+    addOrderBy: () => queryBuilder,
+    getMany: () =>
+      Promise.resolve(
+        rows.filter(
+          (row) =>
+            String(row.channelId) === queryChannelId &&
+            (row.hasError || row.hasWarning)
+        )
+      ),
+  };
   const repo = {
+    createQueryBuilder: () => queryBuilder,
     upsert: (entity: Partial<ContentCheckResult>) => {
       const existing = findMatching(entity);
       if (existing) {
@@ -86,5 +105,49 @@ describe('ContentCheckResultService', () => {
     expect(rows[0].messages).toHaveLength(1);
     expect(rows[0].hasError).toBe(false);
     expect(rows[0].hasWarning).toBe(true);
+  });
+
+  it('omits eligibility-only warnings from global issue results', async () => {
+    const { connection } = createFakeConnection();
+    const service = new ContentCheckResultService(connection);
+    const ctx = { channelId: '1' } as unknown as RequestContext;
+
+    await service.saveResult(ctx, {
+      entityType: 'product',
+      entityId: '1',
+      channelId: '1',
+      languageCode: 'en',
+      messages: [
+        {
+          source: 'meta-title',
+          severity: 'warning',
+          code: 'META_TITLE_MISSING',
+          message: 'Page has no meta title.',
+        },
+      ],
+      checkedAt: new Date(),
+    });
+    await service.saveResult(ctx, {
+      entityType: 'collection',
+      entityId: '2',
+      channelId: '1',
+      languageCode: 'en',
+      messages: [
+        {
+          source: 'entity-eligibility',
+          severity: 'warning',
+          code: 'ENTITY_EXCLUDED',
+          message: 'This entity is excluded from content checks.',
+        },
+      ],
+      checkedAt: new Date(),
+    });
+
+    await expect(service.findOverview(ctx)).resolves.toMatchObject([
+      { entityType: 'product', entityId: '1' },
+    ]);
+    await expect(
+      service.findDistinctEntityTypesWithIssues(ctx)
+    ).resolves.toEqual(['product']);
   });
 });

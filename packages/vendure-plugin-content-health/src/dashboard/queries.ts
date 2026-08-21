@@ -41,7 +41,9 @@ export const contentCheckOverviewListDocument = graphql(`
 `);
 
 export const contentCheckOverviewForWidgetDocument = graphql(`
-  query ContentCheckOverviewForWidget($options: ContentCheckOverviewListOptions) {
+  query ContentCheckOverviewForWidget(
+    $options: ContentCheckOverviewListOptions
+  ) {
     contentCheckOverview(options: $options) {
       items {
         id
@@ -58,7 +60,9 @@ export const contentCheckOverviewForWidgetDocument = graphql(`
 `);
 
 export const contentCheckOverviewForAlertDocument = graphql(`
-  query ContentCheckOverviewForAlert($options: ContentCheckOverviewListOptions) {
+  query ContentCheckOverviewForAlert(
+    $options: ContentCheckOverviewListOptions
+  ) {
     contentCheckOverview(options: $options) {
       items {
         entityType

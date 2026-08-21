@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ID, RequestContext, TransactionalConnection } from '@vendure/core';
 import { ContentCheckResult } from '../entities/content-check-result.entity';
-import { ContentCheckMessage } from '../types';
+import { ContentCheckMessage, ENTITY_EXCLUDED_CODE } from '../types';
 
 export interface SaveContentCheckResultInput {
   entityType: string;
@@ -42,19 +42,23 @@ export class ContentCheckResultService {
    * one warning or error.
    */
   async findOverview(ctx: RequestContext): Promise<ContentCheckResult[]> {
-    return this.connection
+    const results = await this.connection
       .getRepository(ctx, ContentCheckResult)
       .createQueryBuilder('result')
       .where('result.channelId = :channelId', {
         channelId: ctx.channelId.toString(),
       })
-      .andWhere('(result.hasError = :hasError OR result.hasWarning = :hasWarning)', {
-        hasError: true,
-        hasWarning: true,
-      })
+      .andWhere(
+        '(result.hasError = :hasError OR result.hasWarning = :hasWarning)',
+        {
+          hasError: true,
+          hasWarning: true,
+        }
+      )
       .orderBy('result.entityType', 'ASC')
       .addOrderBy('result.entityId', 'ASC')
       .getMany();
+    return results.filter((result) => !isEntityExcludedResult(result));
   }
 
   /**
@@ -63,20 +67,11 @@ export class ContentCheckResultService {
    * list's "Type" filter with whatever entity types (built-in or from
    * `additionalChecks`) are actually present, instead of a fixed list.
    */
-  async findDistinctEntityTypesWithIssues(ctx: RequestContext): Promise<string[]> {
-    const rows = await this.connection
-      .getRepository(ctx, ContentCheckResult)
-      .createQueryBuilder('result')
-      .select('DISTINCT result.entityType', 'entityType')
-      .where('result.channelId = :channelId', {
-        channelId: ctx.channelId.toString(),
-      })
-      .andWhere('(result.hasError = :hasError OR result.hasWarning = :hasWarning)', {
-        hasError: true,
-        hasWarning: true,
-      })
-      .getRawMany<{ entityType: string }>();
-    return rows.map((row) => row.entityType).sort();
+  async findDistinctEntityTypesWithIssues(
+    ctx: RequestContext
+  ): Promise<string[]> {
+    const results = await this.findOverview(ctx);
+    return [...new Set(results.map((result) => result.entityType))].sort();
   }
 
   /**
@@ -97,7 +92,8 @@ export class ContentCheckResultService {
     const entityType = input.entityType;
     const entityId = input.entityId.toString();
     const channelId = input.channelId.toString();
-    const languageCode = input.languageCode as ContentCheckResult['languageCode'];
+    const languageCode =
+      input.languageCode as ContentCheckResult['languageCode'];
     const hasError = input.messages.some((m) => m.severity === 'error');
     const hasWarning = input.messages.some((m) => m.severity === 'warning');
 
@@ -121,4 +117,12 @@ export class ContentCheckResultService {
       where: { entityType, entityId, channelId, languageCode },
     });
   }
+}
+
+/** Returns whether a result only reports exclusion from content checks. */
+function isEntityExcludedResult(result: ContentCheckResult): boolean {
+  return (
+    result.messages.length > 0 &&
+    result.messages.every((message) => message.code === ENTITY_EXCLUDED_CODE)
+  );
 }

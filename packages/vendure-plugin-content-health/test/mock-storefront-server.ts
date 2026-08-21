@@ -28,17 +28,43 @@ function jsonLdScript(json: unknown[]): string {
   return `<script type="application/ld+json">${JSON.stringify(json)}</script>`;
 }
 
-function renderGoodPage(kind: 'products' | 'collections', slug: string): string {
+function renderGoodPage(
+  kind: 'products' | 'collections',
+  slug: string
+): string {
   const pageUrl = `${baseUrl()}/en/${kind}/${slug}`;
   const jsonLd =
     kind === 'products'
       ? [
-          { '@context': 'https://schema.org', '@type': 'Product', name: titleCase(slug), url: pageUrl },
-          { '@context': 'https://schema.org', '@type': 'ProductGroup', name: titleCase(slug) },
-          { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [] },
-          { '@context': 'https://schema.org', '@type': 'Organization', name: 'Demo Storefront' },
+          {
+            '@context': 'https://schema.org',
+            '@type': 'Product',
+            name: titleCase(slug),
+            url: pageUrl,
+          },
+          {
+            '@context': 'https://schema.org',
+            '@type': 'ProductGroup',
+            name: titleCase(slug),
+          },
+          {
+            '@context': 'https://schema.org',
+            '@type': 'BreadcrumbList',
+            itemListElement: [],
+          },
+          {
+            '@context': 'https://schema.org',
+            '@type': 'Organization',
+            name: 'Demo Storefront',
+          },
         ]
-      : [{ '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [] }];
+      : [
+          {
+            '@context': 'https://schema.org',
+            '@type': 'BreadcrumbList',
+            itemListElement: [],
+          },
+        ];
   return `<!DOCTYPE html>
 <html>
 <head>

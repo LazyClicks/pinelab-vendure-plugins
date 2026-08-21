@@ -26,7 +26,10 @@ export default defineConfig({
           outputPath,
           configFileName,
         }) => {
-          const relPath = relative(join(monorepoRoot, 'packages'), inputRootDir);
+          const relPath = relative(
+            join(monorepoRoot, 'packages'),
+            inputRootDir
+          );
           return join(outputPath, relPath, configFileName);
         },
       },

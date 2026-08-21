@@ -9,7 +9,11 @@ import {
 } from '@vendure/dashboard';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnyRoute, Link } from '@tanstack/react-router';
-import { AlertTriangleIcon, ExternalLinkIcon, RefreshCwIcon } from 'lucide-react';
+import {
+  AlertTriangleIcon,
+  ExternalLinkIcon,
+  RefreshCwIcon,
+} from 'lucide-react';
 import { useRef } from 'react';
 import { toast } from 'sonner';
 import { entityTypeLabel } from '../entity-type-label';
@@ -27,7 +31,9 @@ import {
  * arbitrary site-owner-chosen string, not necessarily URL-safe.
  */
 function issueDetailHref(entityType: string, entityId: string): string {
-  return `/content-health/issues/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`;
+  return `/content-health/issues/${encodeURIComponent(
+    entityType
+  )}/${encodeURIComponent(entityId)}`;
 }
 
 function ContentCheckIssuesListPage({ route }: { route: AnyRoute }) {
@@ -39,7 +45,11 @@ function ContentCheckIssuesListPage({ route }: { route: AnyRoute }) {
     onSuccess: async (data) => {
       const result = data.runContentHealthFullScan;
       toast.success(
-        `Full scan complete: ${result.entitiesChecked} ${result.entitiesChecked === 1 ? 'entity' : 'entities'} checked across ${result.channelsScanned} ${result.channelsScanned === 1 ? 'channel' : 'channels'}.`
+        `Full scan complete: ${result.entitiesChecked} ${
+          result.entitiesChecked === 1 ? 'entity' : 'entities'
+        } checked across ${result.channelsScanned} ${
+          result.channelsScanned === 1 ? 'channel' : 'channels'
+        }.`
       );
       await queryClient.invalidateQueries({
         queryKey: ['content-health-overview'],
@@ -90,7 +100,10 @@ function ContentCheckIssuesListPage({ route }: { route: AnyRoute }) {
           meta: { dependencies: ['entityId'] },
           cell: ({ row }) => (
             <DetailPageButton
-              href={issueDetailHref(row.original.entityType, row.original.entityId)}
+              href={issueDetailHref(
+                row.original.entityType,
+                row.original.entityId
+              )}
               label={row.original.name}
             />
           ),
@@ -162,7 +175,9 @@ function ContentCheckIssuesListPage({ route }: { route: AnyRoute }) {
             if (!url) {
               return null;
             }
-            const label = `Go to ${entityTypeLabel(row.original.entityType).toLowerCase()}`;
+            const label = `Go to ${entityTypeLabel(
+              row.original.entityType
+            ).toLowerCase()}`;
             return (
               <Button
                 variant="ghost"
@@ -202,7 +217,9 @@ function ContentCheckIssuesListPage({ route }: { route: AnyRoute }) {
           onClick={() => runFullScanMutation.mutate()}
         >
           <RefreshCwIcon
-            className={`h-4 w-4 mr-2 ${runFullScanMutation.isPending ? 'animate-spin' : ''}`}
+            className={`h-4 w-4 mr-2 ${
+              runFullScanMutation.isPending ? 'animate-spin' : ''
+            }`}
           />
           {runFullScanMutation.isPending ? 'Scanning…' : 'Run full scan now'}
         </Button>

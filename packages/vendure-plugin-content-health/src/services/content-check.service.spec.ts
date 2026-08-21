@@ -16,7 +16,10 @@ import { ContentCheckResult } from '../entities/content-check-result.entity';
 import { ContentCheckResultService } from './content-check-result.service';
 import { ContentCheckService } from './content-check.service';
 import { SitemapFetcher } from './sitemap-fetcher';
-import { PageFetchResult, StorefrontPageFetcher } from './storefront-page-fetcher';
+import {
+  PageFetchResult,
+  StorefrontPageFetcher,
+} from './storefront-page-fetcher';
 
 function createService(options: ContentHealthPluginOptions) {
   const saveResult = vi.fn(
@@ -50,7 +53,7 @@ function createService(options: ContentHealthPluginOptions) {
     undefined as unknown as ModuleRef, // unused by checkEntity
     options
   );
-  return { service, saveResult };
+  return { service, saveResult, fetch };
 }
 
 const channel = {
@@ -66,12 +69,15 @@ function createEntity(): Product | Collection {
 }
 
 describe('ContentCheckService.checkEntity', () => {
-  it('short-circuits an entity rejected by shouldCheckEntity: no result is written, no error is produced', async () => {
+  it('replaces results with a warning when shouldCheckEntity rejects the entity and skips all other checks', async () => {
     const shouldCheckEntity = vi.fn(() => false);
-    const { service, saveResult } = createService({
-      getProductUrl: vi.fn(),
+    const getProductUrl = vi.fn();
+    const configurableCheck = vi.fn();
+    const { service, saveResult, fetch } = createService({
+      getProductUrl,
       getCollectionUrl: vi.fn(),
       shouldCheckEntity,
+      checks: { product: [configurableCheck] },
     });
 
     const result = await service.checkEntity(
@@ -82,9 +88,20 @@ describe('ContentCheckService.checkEntity', () => {
       LanguageCode.en
     );
 
-    expect(result).toBeUndefined();
-    expect(saveResult).not.toHaveBeenCalled();
-    expect(shouldCheckEntity).toHaveBeenCalledTimes(1);
+    expect(result).toBeDefined();
+    expect(saveResult).toHaveBeenCalledOnce();
+    expect(saveResult.mock.calls[0][1].messages).toEqual([
+      {
+        source: 'entity-eligibility',
+        severity: 'warning',
+        code: 'ENTITY_EXCLUDED',
+        message: 'This entity is excluded from content checks.',
+      },
+    ]);
+    expect(shouldCheckEntity).toHaveBeenCalledOnce();
+    expect(getProductUrl).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(configurableCheck).not.toHaveBeenCalled();
   });
 
   it('checks an entity as normal when shouldCheckEntity is not configured', async () => {
@@ -109,11 +126,9 @@ describe('ContentCheckService.checkEntity', () => {
     const throwingCheck = vi.fn(() => {
       throw new Error('boom');
     });
-    const passingCheck = vi.fn(
-      (): ContentCheckMessage[] => [
-        { source: 'demo', severity: 'warning', code: 'DEMO', message: 'ok' },
-      ]
-    );
+    const passingCheck = vi.fn((): ContentCheckMessage[] => [
+      { source: 'demo', severity: 'warning', code: 'DEMO', message: 'ok' },
+    ]);
     const { service, saveResult } = createService({
       // Forces URL_UNRESOLVABLE, so the page fetch is skipped.
       getProductUrl: vi.fn(() => Promise.resolve(undefined)),

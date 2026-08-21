@@ -39,6 +39,7 @@ import {
   ContentCheckEntityType,
   ContentCheckMessage,
   ContentHealthPluginOptions,
+  ENTITY_EXCLUDED_CODE,
 } from '../types';
 import { ContentCheckResultService } from './content-check-result.service';
 import { SitemapFetcher, SitemapFetchResult } from './sitemap-fetcher';
@@ -149,7 +150,11 @@ export class ContentCheckService implements OnApplicationBootstrap {
     const tasks: Task[] = [];
     for (const product of products) {
       for (const languageCode of languages) {
-        tasks.push({ entityType: 'product', entityId: product.id, languageCode });
+        tasks.push({
+          entityType: 'product',
+          entityId: product.id,
+          languageCode,
+        });
       }
     }
     for (const collection of collections) {
@@ -279,7 +284,9 @@ export class ContentCheckService implements OnApplicationBootstrap {
         findings.push(toFindingEntry(group.entityType, savedResult));
       } catch (e) {
         Logger.error(
-          `Failed to save an additionalChecks result (entityType '${group.entityType}', entityId '${group.entityId}') for channel '${channel.code}': ${
+          `Failed to save an additionalChecks result (entityType '${
+            group.entityType
+          }', entityId '${group.entityId}') for channel '${channel.code}': ${
             asError(e).message
           }`,
           loggerCtx,
@@ -341,7 +348,12 @@ export class ContentCheckService implements OnApplicationBootstrap {
     ctx: RequestContext,
     productId: ID
   ): Promise<void> {
-    await this.checkSingleEntityInChannel(ctx, 'product', productId, ctx.channel);
+    await this.checkSingleEntityInChannel(
+      ctx,
+      'product',
+      productId,
+      ctx.channel
+    );
   }
 
   /**
@@ -413,7 +425,21 @@ export class ContentCheckService implements OnApplicationBootstrap {
     sitemapCache: Map<string, SitemapFetchResult> = new Map()
   ): Promise<ContentCheckResult | undefined> {
     if (!(await this.isEligible(ctx, entity))) {
-      return undefined;
+      return this.resultService.saveResult(ctx, {
+        entityType,
+        entityId: entity.id,
+        channelId: channel.id,
+        languageCode,
+        messages: [
+          {
+            source: 'entity-eligibility',
+            severity: 'warning',
+            code: ENTITY_EXCLUDED_CODE,
+            message: 'This entity is excluded from content checks.',
+          },
+        ],
+        checkedAt: new Date(),
+      });
     }
 
     const messages: ContentCheckMessage[] = [];
@@ -527,7 +553,9 @@ export class ContentCheckService implements OnApplicationBootstrap {
       messages.push(internalErrorMessage('meta-title', e));
     }
     try {
-      messages.push(...checkMetaDescriptionLength(extractMetaDescription(html)));
+      messages.push(
+        ...checkMetaDescriptionLength(extractMetaDescription(html))
+      );
     } catch (e) {
       messages.push(internalErrorMessage('meta-description', e));
     }

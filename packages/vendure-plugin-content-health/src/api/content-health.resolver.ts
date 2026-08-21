@@ -12,7 +12,10 @@ import {
 import { ContentCheckResult } from '../entities/content-check-result.entity';
 import { ContentCheckResultService } from '../services/content-check-result.service';
 import { ContentCheckService } from '../services/content-check.service';
-import { groupContentCheckResultsByEntity, truncate } from './overview-aggregation';
+import {
+  groupContentCheckResultsByEntity,
+  truncate,
+} from './overview-aggregation';
 import {
   applyOverviewFilter,
   applyOverviewSort,
@@ -89,7 +92,10 @@ export class ContentHealthResolver {
         continue;
       }
       const entityType = toGraphQlEntityType(group.entityType);
-      const encodedEntityId = this.encodeEntityId(group.entityType, group.entityId);
+      const encodedEntityId = this.encodeEntityId(
+        group.entityType,
+        group.entityId
+      );
       items.push({
         id: `${entityType}:${encodedEntityId}`,
         entityType,
@@ -101,7 +107,9 @@ export class ContentHealthResolver {
         errorCount: group.errorCount,
         warningCount: group.warningCount,
         languageCodes: group.languageCodes,
-        preview: group.preview ? truncate(group.preview, PREVIEW_MAX_LENGTH) : null,
+        preview: group.preview
+          ? truncate(group.preview, PREVIEW_MAX_LENGTH)
+          : null,
       });
     }
 
@@ -117,9 +125,8 @@ export class ContentHealthResolver {
   @Query()
   @Allow(Permission.ReadCatalog, Permission.ReadProduct)
   async contentCheckEntityTypes(@Ctx() ctx: RequestContext): Promise<string[]> {
-    const entityTypes = await this.resultService.findDistinctEntityTypesWithIssues(
-      ctx
-    );
+    const entityTypes =
+      await this.resultService.findDistinctEntityTypesWithIssues(ctx);
     return entityTypes.map((entityType) => toGraphQlEntityType(entityType));
   }
 

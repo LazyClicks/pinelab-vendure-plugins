@@ -15,9 +15,9 @@ describe('checkHreflang', () => {
       enabledLanguageCodes: ['en', 'nl'],
       linkedPageTags: new Map(),
     });
-    expect(
-      messages.some((m) => m.code === 'HREFLANG_MISSING_LANGUAGE')
-    ).toBe(true);
+    expect(messages.some((m) => m.code === 'HREFLANG_MISSING_LANGUAGE')).toBe(
+      true
+    );
     expect(messages.every((m) => m.severity === 'warning')).toBe(true);
   });
 
@@ -49,9 +49,9 @@ describe('checkHreflang', () => {
       enabledLanguageCodes: ['en', 'nl'],
       linkedPageTags: new Map([[nlUrl, [{ hreflang: 'en', href: pageUrl }]]]),
     });
-    expect(
-      messages.some((m) => m.code === 'HREFLANG_MISSING_X_DEFAULT')
-    ).toBe(true);
+    expect(messages.some((m) => m.code === 'HREFLANG_MISSING_X_DEFAULT')).toBe(
+      true
+    );
   });
 
   it('produces no warnings for a fully valid hreflang set', () => {

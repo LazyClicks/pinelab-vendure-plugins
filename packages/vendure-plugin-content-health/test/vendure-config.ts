@@ -3,6 +3,7 @@ require('dotenv').config();
 import {
   Administrator,
   DefaultLogger,
+  DefaultSchedulerPlugin,
   DefaultSearchPlugin,
   dummyPaymentHandler,
   LogLevel,
@@ -86,6 +87,7 @@ export const config: VendureConfig = mergeConfig(testConfig, {
       ],
     }),
     DefaultSearchPlugin,
+    DefaultSchedulerPlugin.init(),
     DashboardPlugin.init({
       // The route should correspond to the `base` setting
       // in the vite.config.mts file

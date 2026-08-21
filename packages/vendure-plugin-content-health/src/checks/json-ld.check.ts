@@ -1,6 +1,10 @@
 import { ContentCheckEntityType, ContentCheckMessage } from '../types';
 
-export const PRODUCT_REQUIRED_TYPES = ['Product', 'ProductGroup', 'BreadcrumbList'];
+export const PRODUCT_REQUIRED_TYPES = [
+  'Product',
+  'ProductGroup',
+  'BreadcrumbList',
+];
 export const PRODUCT_ALTERNATIVE_TYPES = ['Organization', 'OnlineStore'];
 export const COLLECTION_REQUIRED_TYPES = ['BreadcrumbList'];
 

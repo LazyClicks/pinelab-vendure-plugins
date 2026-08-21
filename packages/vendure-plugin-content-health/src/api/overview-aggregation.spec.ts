@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { ContentCheckResult } from '../entities/content-check-result.entity';
-import { groupContentCheckResultsByEntity, truncate } from './overview-aggregation';
+import {
+  groupContentCheckResultsByEntity,
+  truncate,
+} from './overview-aggregation';
 
 function result(overrides: Record<string, unknown> = {}): ContentCheckResult {
   return {
@@ -23,7 +26,12 @@ describe('groupContentCheckResultsByEntity', () => {
       result({
         languageCode: 'en',
         messages: [
-          { source: 'x', severity: 'warning', code: 'W1', message: 'en warning' },
+          {
+            source: 'x',
+            severity: 'warning',
+            code: 'W1',
+            message: 'en warning',
+          },
         ],
       }),
       result({
@@ -56,7 +64,12 @@ describe('groupContentCheckResultsByEntity', () => {
       result({
         languageCode: 'en',
         messages: [
-          { source: 'x', severity: 'warning', code: 'W1', message: 'a warning' },
+          {
+            source: 'x',
+            severity: 'warning',
+            code: 'W1',
+            message: 'a warning',
+          },
         ],
       }),
       result({
@@ -73,8 +86,18 @@ describe('groupContentCheckResultsByEntity', () => {
     const groups = groupContentCheckResultsByEntity([
       result({
         messages: [
-          { source: 'x', severity: 'warning', code: 'W1', message: 'first warning' },
-          { source: 'x', severity: 'warning', code: 'W2', message: 'second warning' },
+          {
+            source: 'x',
+            severity: 'warning',
+            code: 'W1',
+            message: 'first warning',
+          },
+          {
+            source: 'x',
+            severity: 'warning',
+            code: 'W2',
+            message: 'second warning',
+          },
         ],
       }),
     ]);

@@ -69,7 +69,10 @@ function matchesStringOperator(value: string, op: StringOperatorsArg): boolean {
   return true;
 }
 
-function matchesBooleanOperator(value: boolean, op: BooleanOperatorsArg): boolean {
+function matchesBooleanOperator(
+  value: boolean,
+  op: BooleanOperatorsArg
+): boolean {
   return op.eq === undefined || value === op.eq;
 }
 

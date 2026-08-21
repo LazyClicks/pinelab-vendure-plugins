@@ -24,6 +24,9 @@ export type ContentCheckEntityType = 'product' | 'collection';
  */
 export type ContentCheckSeverity = 'warning' | 'error';
 
+/** Stable code used when `shouldCheckEntity` excludes an entity. */
+export const ENTITY_EXCLUDED_CODE = 'ENTITY_EXCLUDED';
+
 /**
  * @description
  * A single finding produced by a built-in or configurable content check.
@@ -249,10 +252,11 @@ export interface ContentHealthPluginOptions {
    * Determines whether a given product or collection is eligible for
    * content/SEO checks. Use this to apply your own business rules for
    * excluding entities (e.g. a `hidden` or `onlyDisplayAfterDate` custom
-   * field) rather than relying on a field owned by this plugin. Evaluated
-   * before the scheduled full scan, an on-demand full scan, and the
-   * per-entity check triggered by a product/collection update. When
-   * omitted, every product and collection is eligible.
+   * field) rather than relying on a field owned by this plugin. Excluded
+   * entities are omitted from scheduled/on-demand full scans. A manual or
+   * update-triggered per-entity check instead replaces the entity's current
+   * results with an `ENTITY_EXCLUDED` warning for each enabled language.
+   * When omitted, every product and collection is eligible.
    */
   shouldCheckEntity?: (
     ctx: RequestContext,

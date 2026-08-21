@@ -11,7 +11,8 @@ describe('checkJsonLdTypes', () => {
       ]);
       expect(
         messages.some(
-          (m) => m.code === 'JSON_LD_MISSING_TYPE' && m.message.includes("'Product'")
+          (m) =>
+            m.code === 'JSON_LD_MISSING_TYPE' && m.message.includes("'Product'")
         )
       ).toBe(true);
     });
@@ -22,9 +23,9 @@ describe('checkJsonLdTypes', () => {
         'BreadcrumbList',
         'Organization',
       ]);
-      expect(
-        messages.some((m) => m.message.includes('ProductGroup'))
-      ).toBe(true);
+      expect(messages.some((m) => m.message.includes('ProductGroup'))).toBe(
+        true
+      );
     });
 
     it('flags a missing BreadcrumbList type', () => {
@@ -33,9 +34,9 @@ describe('checkJsonLdTypes', () => {
         'ProductGroup',
         'Organization',
       ]);
-      expect(
-        messages.some((m) => m.message.includes('BreadcrumbList'))
-      ).toBe(true);
+      expect(messages.some((m) => m.message.includes('BreadcrumbList'))).toBe(
+        true
+      );
     });
 
     it('flags when both Organization and OnlineStore are missing', () => {

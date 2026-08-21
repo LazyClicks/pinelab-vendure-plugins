@@ -15,6 +15,7 @@ import { initialData } from '../../test/src/initial-data';
 import { testPaymentMethod } from '../../test/src/test-payment-method';
 import { waitFor } from '../../test/src/test-helpers';
 import {
+  AdditionalCheckResult,
   ChannelContentScanCompletedEvent,
   ContentCheckService,
   ContentHealthPlugin,
@@ -82,8 +83,15 @@ const RUN_CONTENT_CHECK_FOR_PRODUCT = gql`
   mutation RunContentCheckForProduct($productId: ID!) {
     runContentCheckForProduct(productId: $productId) {
       id
+      languageCode
       hasError
       hasWarning
+      messages {
+        source
+        severity
+        code
+        message
+      }
     }
   }
 `;
@@ -177,23 +185,14 @@ describe('ContentHealthPlugin (e2e)', () => {
    */
   function isBrokenProductOverviewItem(item: OverviewItem): boolean {
     return (
-      item.entityType === 'PRODUCT' && String(item.entityId) === String(brokenProductId)
+      item.entityType === 'PRODUCT' &&
+      String(item.entityId) === String(brokenProductId)
     );
   }
 
+  let excludeProduct = true;
   const configurableCheckCalls: string[] = [];
-  const additionalCheckResults: Array<{
-    entityType: string;
-    entityId: string;
-    label: string;
-    url?: string;
-    messages: Array<{
-      source: string;
-      severity: string;
-      code: string;
-      message: string;
-    }>;
-  }> = [];
+  const additionalCheckResults: AdditionalCheckResult[] = [];
 
   beforeAll(async () => {
     registerInitializer('sqljs', new SqljsInitializer('__data__'));
@@ -211,7 +210,7 @@ describe('ContentHealthPlugin (e2e)', () => {
           // creation) is the GraphQL-encoded admin-facing id — the two are
           // not directly comparable.
           shouldCheckEntity: (ctx, entity) =>
-            entity.slug !== 'excluded-product',
+            !excludeProduct || entity.slug !== 'excluded-product',
           checks: {
             product: [
               (ctx, { product }) => {
@@ -220,9 +219,7 @@ describe('ContentHealthPlugin (e2e)', () => {
               },
             ],
           },
-          additionalChecks: [
-            () => additionalCheckResults,
-          ],
+          additionalChecks: [() => additionalCheckResults],
         }),
       ],
       paymentOptions: {
@@ -332,7 +329,10 @@ describe('ContentHealthPlugin (e2e)', () => {
       .persist();
     storefrontClient
       .intercept({ path: '/sitemap.xml', method: 'GET' })
-      .reply(200, sitemapXml([goodProductUrl, goodCollectionUrl, brokenProductUrl]))
+      .reply(
+        200,
+        sitemapXml([goodProductUrl, goodCollectionUrl, brokenProductUrl])
+      )
       .persist();
   }, 60000);
 
@@ -461,30 +461,49 @@ describe('ContentHealthPlugin (e2e)', () => {
         entityType: 'PRODUCT',
         entityId: goodProductId,
       });
-      return res.contentCheckResults.length > 0 ? res.contentCheckResults : undefined;
+      return res.contentCheckResults.length > 0
+        ? res.contentCheckResults
+        : undefined;
     });
 
     expect(results[0].hasError).toBe(false);
   }, 20000);
 
-  it('11.4: updating the excluded product does not produce a check result', async () => {
-    // No mock intercept registered for this entity's URL: if the
-    // `shouldCheckEntity` short-circuit were broken, the resulting fetch
-    // failure would still surface as a saved error result, so this
-    // assertion is meaningful either way.
+  it('11.4: updating an excluded product stores only an eligibility warning', async () => {
+    // No mock intercept is registered for this entity. Reaching the page
+    // fetch would therefore produce an error instead of this warning.
     await adminClient.query(UPDATE_PRODUCT, {
       input: { id: excludedProductId, enabled: true },
     });
 
-    // Give the async event subscriber a moment to run (or not run).
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    const results = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
-      entityType: 'PRODUCT',
-      entityId: excludedProductId,
+    const results = await waitFor(async () => {
+      const response = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {
+        entityType: 'PRODUCT',
+        entityId: excludedProductId,
+      });
+      return response.contentCheckResults[0]?.messages[0]?.code ===
+        'ENTITY_EXCLUDED'
+        ? response.contentCheckResults
+        : undefined;
     });
-    expect(results.contentCheckResults).toEqual([]);
-  });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].hasError).toBe(false);
+    expect(results[0].hasWarning).toBe(true);
+    expect(results[0].messages).toEqual([
+      {
+        source: 'entity-eligibility',
+        severity: 'WARNING',
+        code: 'ENTITY_EXCLUDED',
+        message: 'This entity is excluded from content checks.',
+      },
+    ]);
+
+    const overview = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {
+      options: { filter: { name: { contains: 'Excluded Product' } } },
+    });
+    expect(overview.contentCheckOverview.items).toEqual([]);
+  }, 20000);
 
   it('11.6 + 11.7: overview includes an entity with errors, and drops it (with replaced messages) once fixed', async () => {
     const brokenProductUrl = `${STOREFRONT_ORIGIN}/en/products/broken-product`;
@@ -501,14 +520,21 @@ describe('ContentHealthPlugin (e2e)', () => {
         entityId: brokenProductId,
       });
       const messages = res.contentCheckResults[0]?.messages ?? [];
-      return messages.some((m: { code: string }) => m.code === 'PAGE_FETCH_FAILED')
+      return messages.some(
+        (m: { code: string }) => m.code === 'PAGE_FETCH_FAILED'
+      )
         ? true
         : undefined;
     });
 
-    const overviewBefore = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {});
+    const overviewBefore = await adminClient.query(
+      GET_CONTENT_CHECK_OVERVIEW,
+      {}
+    );
     expect(
-      overviewBefore.contentCheckOverview.items.some(isBrokenProductOverviewItem)
+      overviewBefore.contentCheckOverview.items.some(
+        isBrokenProductOverviewItem
+      )
     ).toBe(true);
 
     // Now: fix it (page is reachable and fully valid; the shared sitemap
@@ -544,7 +570,10 @@ describe('ContentHealthPlugin (e2e)', () => {
       )
     ).toBe(false);
 
-    const overviewAfter = await adminClient.query(GET_CONTENT_CHECK_OVERVIEW, {});
+    const overviewAfter = await adminClient.query(
+      GET_CONTENT_CHECK_OVERVIEW,
+      {}
+    );
     expect(
       overviewAfter.contentCheckOverview.items.some(isBrokenProductOverviewItem)
     ).toBe(false);
@@ -611,8 +640,43 @@ describe('ContentHealthPlugin (e2e)', () => {
     expect(result.runContentCheckForProduct[0].hasWarning).toBe(false);
   });
 
+  it('runContentCheckForProduct replaces stale errors with one exclusion warning per enabled language', async () => {
+    excludeProduct = false;
+    const checkedResult = await adminClient.query(
+      RUN_CONTENT_CHECK_FOR_PRODUCT,
+      {
+        productId: excludedProductId,
+      }
+    );
+    expect(checkedResult.runContentCheckForProduct[0].hasError).toBe(true);
+
+    excludeProduct = true;
+    const excludedResult = await adminClient.query(
+      RUN_CONTENT_CHECK_FOR_PRODUCT,
+      { productId: excludedProductId }
+    );
+
+    expect(excludedResult.runContentCheckForProduct).toHaveLength(1);
+    expect(excludedResult.runContentCheckForProduct[0]).toMatchObject({
+      languageCode: 'en',
+      hasError: false,
+      hasWarning: true,
+      messages: [
+        {
+          source: 'entity-eligibility',
+          severity: 'WARNING',
+          code: 'ENTITY_EXCLUDED',
+          message: 'This entity is excluded from content checks.',
+        },
+      ],
+    });
+  });
+
   it('runContentHealthFullScan: manually runs a full scan on demand', async () => {
-    const result = await adminClient.query(RUN_CONTENT_SEO_MONITOR_FULL_SCAN, {});
+    const result = await adminClient.query(
+      RUN_CONTENT_SEO_MONITOR_FULL_SCAN,
+      {}
+    );
 
     expect(result.runContentHealthFullScan.channelsScanned).toBe(1);
     // Our 3 non-excluded entities plus whatever the CSV fixture imported.
@@ -648,9 +712,12 @@ describe('ContentHealthPlugin (e2e)', () => {
 
     // Run the manual check while scoped to channel 2.
     adminClient.setChannelToken('seo-monitor-test-channel-2-token');
-    const channel2Result = await adminClient.query(RUN_CONTENT_CHECK_FOR_PRODUCT, {
-      productId: goodProductId,
-    });
+    const channel2Result = await adminClient.query(
+      RUN_CONTENT_CHECK_FOR_PRODUCT,
+      {
+        productId: goodProductId,
+      }
+    );
     expect(channel2Result.runContentCheckForProduct).toHaveLength(1);
 
     const channel2Results = await adminClient.query(GET_CONTENT_CHECK_RESULTS, {

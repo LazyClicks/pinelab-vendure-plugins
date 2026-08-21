@@ -170,8 +170,8 @@ export function ContentCheckIssueDetailPage({ route }: { route: AnyRoute }) {
   const editEntityHref = isProduct
     ? `/products/${entityId}`
     : isCollection
-      ? `/collections/${entityId}`
-      : storedUrl;
+    ? `/collections/${entityId}`
+    : storedUrl;
 
   return (
     <Page pageId="content-health-issue-detail">
@@ -179,8 +179,8 @@ export function ContentCheckIssueDetailPage({ route }: { route: AnyRoute }) {
         {entityQuery.isLoading
           ? 'Loading…'
           : entityNotFound
-            ? 'Not found'
-            : displayName}
+          ? 'Not found'
+          : displayName}
       </PageTitle>
       <PageActionBar>
         <PageActionBarRight>
@@ -201,7 +201,9 @@ export function ContentCheckIssueDetailPage({ route }: { route: AnyRoute }) {
               onClick={() => checkNowMutation.mutate()}
             >
               <RefreshCwIcon
-                className={`h-4 w-4 mr-2 ${checkNowMutation.isPending ? 'animate-spin' : ''}`}
+                className={`h-4 w-4 mr-2 ${
+                  checkNowMutation.isPending ? 'animate-spin' : ''
+                }`}
               />
               {checkNowMutation.isPending ? 'Checking…' : 'Check now'}
             </Button>

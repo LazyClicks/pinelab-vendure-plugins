@@ -18,11 +18,9 @@ describe('StorefrontPageFetcher', () => {
 
   it('succeeds within the redirect limit', async () => {
     const client = mockAgent.get('https://shop.example.com');
-    client
-      .intercept({ path: '/a', method: 'GET' })
-      .reply(302, undefined, {
-        headers: { location: 'https://shop.example.com/b' },
-      });
+    client.intercept({ path: '/a', method: 'GET' }).reply(302, undefined, {
+      headers: { location: 'https://shop.example.com/b' },
+    });
     client
       .intercept({ path: '/b', method: 'GET' })
       .reply(200, '<html><title>Hi</title></html>');
@@ -39,16 +37,12 @@ describe('StorefrontPageFetcher', () => {
 
   it('fails when the redirect chain exceeds the configured maximum', async () => {
     const client = mockAgent.get('https://shop.example.com');
-    client
-      .intercept({ path: '/a', method: 'GET' })
-      .reply(302, undefined, {
-        headers: { location: 'https://shop.example.com/b' },
-      });
-    client
-      .intercept({ path: '/b', method: 'GET' })
-      .reply(302, undefined, {
-        headers: { location: 'https://shop.example.com/c' },
-      });
+    client.intercept({ path: '/a', method: 'GET' }).reply(302, undefined, {
+      headers: { location: 'https://shop.example.com/b' },
+    });
+    client.intercept({ path: '/b', method: 'GET' }).reply(302, undefined, {
+      headers: { location: 'https://shop.example.com/c' },
+    });
     client.intercept({ path: '/c', method: 'GET' }).reply(200, 'ok');
 
     const result = await fetcher.fetch('https://shop.example.com/a', {

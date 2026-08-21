@@ -41,7 +41,9 @@ export class SitemapFetcher {
 
     let xml: string;
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(timeoutMs),
+      });
       if (response.status < 200 || response.status >= 300) {
         return {
           ok: false,

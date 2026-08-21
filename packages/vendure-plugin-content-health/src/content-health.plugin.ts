@@ -38,9 +38,7 @@ import { ContentHealthPluginOptions } from './types';
   },
   configuration: (config) => {
     config.schedulerOptions.tasks.push(
-      buildContentHealthScanTask(
-        ContentHealthPlugin.options?.scheduledTask
-      )
+      buildContentHealthScanTask(ContentHealthPlugin.options?.scheduledTask)
     );
     return config;
   },
@@ -50,9 +48,7 @@ import { ContentHealthPluginOptions } from './types';
 export class ContentHealthPlugin {
   static options: ContentHealthPluginOptions;
 
-  static init(
-    options: ContentHealthPluginOptions
-  ): typeof ContentHealthPlugin {
+  static init(options: ContentHealthPluginOptions): typeof ContentHealthPlugin {
     this.options = options;
     return ContentHealthPlugin;
   }

@@ -16,7 +16,7 @@ export interface ContentCheckFindingsListMessage {
  */
 export function ContentCheckFindingsList({
   messages,
-  emptyMessage = 'No current SEO/content issues.',
+  emptyMessage = 'All good ✅',
 }: {
   messages: ContentCheckFindingsListMessage[];
   emptyMessage?: string;

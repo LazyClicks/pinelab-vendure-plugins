@@ -16,21 +16,19 @@ defineDashboardExtension({
   pageBlocks: [
     {
       id: 'content-health-findings',
-      title: 'SEO / content checks',
       location: {
         pageId: 'product-detail',
-        column: 'side',
-        position: { blockId: 'facet-values', order: 'after' },
+        column: 'main',
+        position: { blockId: 'main-form', order: 'after' },
       },
       component: ProductContentCheckFindingsBlock,
     },
     {
       id: 'content-health-findings',
-      title: 'SEO / content checks',
       location: {
         pageId: 'collection-detail',
-        column: 'side',
-        position: { blockId: 'assets', order: 'after' },
+        column: 'main',
+        position: { blockId: 'main-form', order: 'after' },
       },
       component: CollectionContentCheckFindingsBlock,
     },
